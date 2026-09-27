@@ -1,0 +1,11 @@
+[theme]
+base = "dark"
+primaryColor = "#C026D3"
+backgroundColor = "#0D0716"
+secondaryBackgroundColor = "#1B1030"
+textColor = "#F3EDFF"
+font = "sans serif"
+
+[server]
+# Streamlit Cloud မှာ headless run
+headless = true
