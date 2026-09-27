@@ -754,14 +754,25 @@ def main():
                 mux_video(S.video_path, dubbed, out)
             S.out_mp4 = out
             st.success("✅ ပြီးပြီ! အောက်မှာ download ချလို့ရပြီ")
+        if S.out_mp4 and os.path.isfile(S.out_mp4) or S.final_segments:
+            # ဗီဒီယိုအသစ်တင်တိုင်း အမည်အကြံကို refresh (ရိုက်ထားတာကို မဖျက်)
+            if S.get("_dl_for") != S.run_id:
+                _base = os.path.splitext(os.path.basename(S.video_path or "video"))[0]
+                S["dl_name"] = f"{_base}_dubbed"
+                S["_dl_for"] = S.run_id
+            st.text_input("📝 ဖိုင်နာမည်", key="dl_name",
+                          help="download ချမယ့်အမည် — .mp4/.srt ကို သူ့အလိုလို ထည့်ပေးမယ်")
+            _dl = re.sub(r'[\\/:*?"<>|]', "_", (S.get("dl_name") or "").strip())
+            if not _dl:
+                _dl = "dubbed"
         if S.out_mp4 and os.path.isfile(S.out_mp4):
             with open(S.out_mp4, "rb") as f:
                 st.download_button("⬇️ Dubbed MP4 ရယူ", f,
-                                   file_name="dubbed_video.mp4", mime="video/mp4")
+                                   file_name=f"{_dl}.mp4", mime="video/mp4")
         if S.final_segments:
             st.download_button("⬇️ SRT ရယူ",
                                segments_to_srt(S.final_segments),
-                               file_name="dubbed.srt", mime="text/plain")
+                               file_name=f"{_dl}.srt", mime="text/plain")
 
 
 if __name__ == "__main__":
