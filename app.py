@@ -38,6 +38,78 @@ WORK_DIR = os.path.join(APP_DIR, "work")
 os.makedirs(CACHE_TTS, exist_ok=True)
 os.makedirs(WORK_DIR, exist_ok=True)
 
+# ---------------------------------------------------------- 💜 Neon Creator theme CSS
+_NEON_CSS = """<style>
+/* နောက်ခံ — ခရမ်းရောင် nebula */
+.stApp {
+    background:
+        radial-gradient(1200px 600px at 85% -10%, rgba(192,38,211,.16), transparent 60%),
+        radial-gradient(900px 500px at 5% 110%, rgba(99,102,241,.14), transparent 60%),
+        #0D0716;
+}
+/* hero ခေါင်းစဉ် — gradient စာသား + glow */
+.neon-hero { padding: 8px 0 4px 0; }
+.neon-title {
+    font-size: 2.1rem; font-weight: 800; line-height: 1.2;
+    background: linear-gradient(90deg, #F0ABFC, #C026D3 45%, #818CF8);
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+    filter: drop-shadow(0 0 16px rgba(192,38,211,.45));
+}
+.neon-sub { color: #C4B5FD; font-size: 1rem; margin-top: 4px; }
+/* အဆင့် ခေါင်းစဉ်တွေ (subheader) — ဘေးမှာ neon လိုင်း */
+h3 {
+    border-left: 4px solid #C026D3;
+    padding-left: 12px !important;
+    text-shadow: 0 0 14px rgba(192,38,211,.55);
+}
+/* အဓိက ခလုတ် — gradient + glow */
+div[data-testid="stBaseButton-primary"] > button, .stButton > button[kind="primary"] {
+    background: linear-gradient(135deg, #A855F7, #EC4899) !important;
+    color: #fff !important; border: none !important; border-radius: 999px !important;
+    font-weight: 700 !important; box-shadow: 0 0 18px rgba(168,85,247,.5) !important;
+}
+div[data-testid="stBaseButton-primary"] > button:hover, .stButton > button[kind="primary"]:hover {
+    box-shadow: 0 0 30px rgba(168,85,247,.85) !important; transform: translateY(-1px);
+    color: #fff !important;
+}
+/* သာမန် ခလုတ် — ခရမ်းဘောင် outline */
+.stButton > button[kind="secondary"], div[data-testid="stBaseButton-secondary"] > button {
+    border: 1px solid rgba(192,38,211,.6) !important; border-radius: 999px !important;
+    background: rgba(192,38,211,.08) !important; color: #E9D5FF !important; font-weight: 600 !important;
+}
+.stButton > button[kind="secondary"]:hover, div[data-testid="stBaseButton-secondary"] > button:hover {
+    background: rgba(192,38,211,.18) !important; box-shadow: 0 0 16px rgba(192,38,211,.4) !important;
+    color: #fff !important; border-color: #E879F9 !important;
+}
+/* sidebar — နက်ခရမ်း gradient + ဘေးလိုင်း */
+section[data-testid="stSidebar"] {
+    background: linear-gradient(180deg, #150C28 0%, #0D0716 100%) !important;
+    border-right: 1px solid rgba(192,38,211,.28);
+}
+/* expander ကတ် */
+div[data-testid="stExpander"] {
+    border: 1px solid rgba(168,85,247,.35); border-radius: 14px;
+    background: rgba(168,85,247,.05);
+}
+/* input / textarea / select */
+div[data-testid="stTextInput"] input, div[data-testid="stTextArea"] textarea,
+div[data-testid="stSelectbox"] div[data-baseweb="select"] > div {
+    border-radius: 12px !important;
+}
+div[data-testid="stTextInput"] input:focus, div[data-testid="stTextArea"] textarea:focus {
+    border-color: #C026D3 !important; box-shadow: 0 0 0 1px #C026D3, 0 0 14px rgba(192,38,211,.4) !important;
+}
+/* file uploader */
+div[data-testid="stFileUploader"] {
+    border: 1px dashed rgba(192,38,211,.5); border-radius: 16px;
+    background: rgba(192,38,211,.05); padding: 8px;
+}
+/* progress bar glow */
+div[data-testid="stProgress"] > div > div { box-shadow: 0 0 12px rgba(192,38,211,.7); }
+/* radio ရွေးစရာ စာသား */
+div[data-testid="stRadio"] label { color: #E9D5FF !important; }
+</style>"""
+
 GROQ_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
 GROQ_MODEL = "whisper-large-v3-turbo"  # sub-translator မှာ အလုပ်ဖြစ်နေတဲ့ model
 GEMINI_MODEL_DEFAULT = "gemini-3.5-flash-lite"   # Script-writer / sub-translator မှာ အလုပ်ဖြစ်နေတဲ့ model
@@ -528,6 +600,7 @@ def _init_state(st):
 def main():
     import streamlit as st
     st.set_page_config(page_title="Audio Dub Studio", page_icon="🎙️", layout="wide")
+    st.markdown(_NEON_CSS, unsafe_allow_html=True)
     _init_state(st)
     S = st.session_state
 
@@ -603,9 +676,13 @@ def main():
             st.rerun()
 
     # ---------------------------------------------------------- main
-    st.header("🎙️ Audio Dub Studio")
-    st.caption("ဗီဒီယို ဒါမှမဟုတ် SRT ဖိုင်ကနေ မြန်မာအသံထွက်ပေးတယ် — "
-               "မူရင်းအချိန်အတိုင်း။")
+    st.markdown(
+        '<div class="neon-hero">'
+        '<div class="neon-title">🎙️ Audio Dub Studio</div>'
+        '<div class="neon-sub">ဗီဒီယို ဒါမှမဟုတ် SRT ဖိုင်ကနေ မြန်မာအသံထွက်ပေးတယ် — '
+        "မူရင်းအချိန်အတိုင်း။</div></div>",
+        unsafe_allow_html=True,
+    )
 
     mode = st.radio("အရင်းအမြစ်", ["🎬 ဗီဒီယို", "📄 SRT ဖိုင်"], horizontal=True,
                     key="src_mode",
