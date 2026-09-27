@@ -9,9 +9,13 @@ Pipeline:
   2. Groq Whisper API (whisper-large-v3-turbo) နဲ့ စာသားထုတ် (timestamp ပါ)
      ※ အရင်က local faster-whisper သုံးတာ — Streamlit Cloud ရဲ့ RAM (~1GB)
        ကန့်သတ်ချက်နဲ့ မကိုက်လို့ Groq API နဲ့ လဲထားတာ
+  2b. (optional) အပိုင်းသေးလေးတွေ အလိုအလျောက်ပေါင်း — Whisper ရဲ့ 0.2s လို
+      အကွက်သေးတွေကြောင့် အသံအရမ်းမြန်ရတာကို ကာကွယ်ဖို့
   3. Gemini နဲ့ သဘာဝကျတဲ့ ပြောစကားမြန်မာလို ဘာသာပြန်
   4. ပြန်စစ်ပြီး ပြင်လို့ရ (တစ်ကြောင်းချင်း)
   5. edge-tts (my-MM-ThihaNeural) နဲ့ အသံထုတ် → အချိန်ကွက်အတိုင်း ချုံ့/ဖြန့်
+  5b. (optional) အချိန်ကွက်ထဲ မဝင်တဲ့လိုင်း → Gemini နဲ့ အလိုအလျောက်တိုအောင်ပြင်
+      → အသံပြန်ထုတ် (တစ်ကြိမ်သာ)
   6. ဗီဒီယိုအသစ်နဲ့ ပေါင်း → MP4 download + SRT download
 
 Run:  streamlit run app.py
@@ -203,6 +207,65 @@ def gemini_translate(api_key, segments, model_id, progress_cb=None):
     return result, failed
 
 
+def merge_tiny_segments(segments, max_gap=0.5, min_slot=1.5, max_merged=8.0):
+    """Whisper (verbose_json) က တခါတလေ စက္ကန့်ပိုင်းအကွက်သေးသေးလေးတွေ
+    (ဥပမာ 0.2s) ပေးတတ်တယ် — အဲ့ဒါတွေကို ကပ်နေတဲ့နောက်အပိုင်းနဲ့ ပေါင်းလိုက်.
+
+    စည်း: အကွက်က min_slot ထက် သေးနေသေးရင် + နောက်အပိုင်းနဲ့ကြားက gap က
+    max_gap ထက်နည်းရင် ပေါင်း; ပေါင်းပြီးသားအကွက် max_merged ထက် မကျော်စေနဲ့.
+    စကားပြောရပ်တဲ့နေရာ (gap ကြီး) တွေတော့ မပေါင်းဘူး — sync မပျက်စေဖို့.
+    """
+    if not segments:
+        return segments
+    merged = []
+    i, n = 0, len(segments)
+    while i < n:
+        cur = dict(segments[i])
+        while (i + 1 < n
+               and cur["end"] - cur["start"] < min_slot
+               and segments[i + 1]["start"] - cur["end"] < max_gap
+               and cur["end"] - cur["start"] < max_merged):
+            nxt = segments[i + 1]
+            cur["end"] = float(nxt["end"])
+            cur["text"] = (cur["text"] + " " + nxt["text"]).strip()
+            if "src" in cur or "src" in nxt:
+                cur["src"] = ((cur.get("src") or "") + " "
+                              + (nxt.get("src") or "")).strip()
+            i += 1
+        merged.append(cur)
+        i += 1
+    return merged
+
+
+_SHORTEN_SYS = (
+    "You rewrite subtitle lines SHORTER for voiceover dubbing. Each line will be "
+    "spoken by TTS inside a tight time slot, so compress aggressively: cut filler "
+    "words, drop repeated ideas, keep only the core meaning. Keep natural SPOKEN "
+    "Burmese (Myanmar). Each item has 'max_chars' — stay under it if possible. "
+    "Return ONLY a JSON array of objects with keys 'id' and 'text'."
+)
+
+
+def gemini_shorten(api_key, model_id, items):
+    """items: [{'id': seg_idx, 'text':..., 'target_chars':...}]
+    → {seg_idx: တိုထားတဲ့စာသား}. ပျက်ရင်/ပြန်မရရင် အဲ့အပိုင်း ပါမလာဘူး
+    (မူရင်းအတိုင်း ကျန်မယ်)."""
+    payload = [{"id": x["id"], "text": x["text"],
+                "max_chars": x["target_chars"]} for x in items]
+    try:
+        res = _gemini_call(api_key, model_id, _SHORTEN_SYS,
+                           json.dumps(payload, ensure_ascii=False))
+    except Exception:
+        return {}
+    out = {}
+    for row in res:
+        if isinstance(row, dict) and "id" in row and "text" in row:
+            t = str(row["text"]).strip()
+            if t:
+                out[int(row["id"])] = t
+    return out
+
+
 # ------------------------------------------------- step 5: TTS + slot fit
 def _valid_audio(path):
     return os.path.isfile(path) and os.path.getsize(path) > 1000
@@ -380,6 +443,7 @@ def _init_state(st):
         "run_id": None, "video_path": None, "audio_path": None, "duration": 0.0,
         "src_segments": None, "translations": None, "final_segments": None,
         "fitted": None, "fit_report": None, "out_mp4": None, "lang": "",
+        "auto_shortened": False,
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -415,6 +479,13 @@ def main():
         model_id = st.text_input("Gemini model", value=GEMINI_MODEL_DEFAULT)
         max_speed = st.slider("အမြန်ဆုံးနှုန်း (အသံချုံ့တာ)", 1.0, 2.0, 1.3, 0.05,
                               help="စာရှည်ရင် ဒီနှုန်းအထိ မြန်ပေးမယ်")
+        auto_merge = st.checkbox("🔗 အပိုင်းသေးတွေ အလိုအလျောက်ပေါင်း", value=True,
+                                 help="Whisper ပေးတဲ့ စက္ကန့်ပိုင်းအကွက်သေးလေးတွေကို "
+                                      "ကပ်နေတဲ့အပိုင်းနဲ့ ပေါင်းမယ် — အသံအရမ်းမြန်ရတာသက်သာမယ်။ "
+                                      "ပိတ်ထားရင် အရင်အတိုင်း")
+        auto_shorten = st.checkbox("✂️ စာရှည်ရင် Gemini နဲ့ အလိုအလျောက်တိုပေး", value=True,
+                                   help="အချိန်ကွက်ထဲ မဝင်တဲ့လိုင်းတွေကို Gemini က တိုတိုပြန်ရေးပြီး "
+                                        "အသံပြန်ထုတ်မယ် (တစ်ကြိမ်သာ)။ ပိတ်ထားရင် အရင်အတိုင်း")
         voice = st.selectbox("အသံ", [VOICE_MALE, VOICE_FEMALE],
                              format_func=lambda v: "🗣️ ကျား (Thiha)" if v == VOICE_MALE else "🗣️ မ (Nilar)")
         st.divider()
@@ -468,10 +539,16 @@ def main():
                     st.stop()
             segs = [{"start": x["start"], "end": x["end"], "text": x["text"]}
                     for x in data.get("segments", [])]
+            merge_note = ""
+            if auto_merge:
+                before = len(segs)
+                segs = merge_tiny_segments(segs)
+                if len(segs) < before:
+                    merge_note = f" (အပိုင်းသေး {before - len(segs)} ခု ပေါင်းပြီးပြီ)"
             S.src_segments, S.lang = segs, data.get("language", "")
             S.translations, S.final_segments, S.fitted = None, None, None
             stt.update(state="complete")
-            st.success(f"✅ အပိုင်း {len(segs)} ခု တွေ့တယ်"
+            st.success(f"✅ အပိုင်း {len(segs)} ခု တွေ့တယ်{merge_note}"
                        + (f" (ဘာသာစကား: {S.lang})" if S.lang else ""))
         if S.src_segments:
             with st.expander(f"တွေ့တဲ့အပိုင်း {len(S.src_segments)} ခု ကြည့်"):
@@ -537,8 +614,32 @@ def main():
             def cb(f, i, t):
                 prog.progress(f)
                 curlbl.text(f"အပိုင်း {i + 1}/{len(S.final_segments)}: {t}")
+            S.auto_shortened = False
             fitted, report = tts_and_fit(S.final_segments, voice, max_speed,
                                          work_segs, progress_cb=cb)
+            # စာရှည်လို့ အချိန်ကွက်ထဲ မဝင်တဲ့လိုင်းတွေ → Gemini နဲ့ အလိုအလျောက်တိုပေး
+            if auto_shorten and report["overflow"] and api_key:
+                items = [{"id": i, "text": t,
+                          "target_chars": max(4, int(len(t) / ratio * 1.15))}
+                         for (i, _s, _e, t, ratio) in report["overflow"]]
+                with st.status("✂️ Gemini နဲ့ စာရှည်တဲ့လိုင်းတွေ တိုအောင်ပြင်နေတယ်...",
+                               expanded=False):
+                    short = gemini_shorten(api_key,
+                                           model_id.strip() or GEMINI_MODEL_DEFAULT,
+                                           items)
+                applied = 0
+                for (i, _s, _e, t, _r) in report["overflow"]:
+                    if i in short and short[i] != t:
+                        S.final_segments[i]["text"] = short[i]
+                        applied += 1
+                if applied:
+                    # တိုထားတဲ့စာသားနဲ့ အသံပြန်ထုတ် (တစ်ကြိမ်သာ — cache ကြောင့်
+                    # မပြောင်းတဲ့လိုင်းတွေ အသံပြန်ထုတ်စရာ မလိုဘူး)
+                    fitted, report = tts_and_fit(S.final_segments, voice, max_speed,
+                                                 work_segs, progress_cb=cb)
+                    S.auto_shortened = True
+                    st.info(f"✂️ Gemini က {applied} လိုင်း တိုအောင်ပြင်ပြီးပြီ — "
+                            "အသံပြန်ထုတ်ထားတယ်")
             S.fitted, S.fit_report, S.out_mp4 = fitted, report, None
             prog.empty(); curlbl.empty()
             st.success(f"✅ အပိုင်း {len(fitted)} ပိုင်း အသံထွက်ပြီးပြီ")
@@ -548,7 +649,9 @@ def main():
                     f"မြန်ပေးထားတာ (≤{max_speed}x): {r['sped']} ပိုင်း | "
                     f"အသံထုတ်မရတာ: {len(r['tts_failed'])} ပိုင်း")
             if r["overflow"]:
-                st.warning("⚠️ အောက်ပါလိုင်းတွေ ရှည်လွန်းနေတယ် — "
+                auto_note = (" (Gemini နဲ့ အလိုအလျောက်တိုပြီးသား — "
+                             "လက်နဲ့ထပ်တိုဖို့လိုနေသေးတယ်)" if S.auto_shortened else "")
+                st.warning("⚠️ အောက်ပါလိုင်းတွေ ရှည်လွန်းနေတယ်" + auto_note + " — "
                            "အဆင့် ၄ မှာ တိုအောင်ပြင်ပြီး ပြန်လုပ်ပါ:")
                 for i, s_, e_, t_, ratio in r["overflow"]:
                     st.write(f"#{i + 1} `{fmt_ts(s_)} → {fmt_ts(e_)}` "
