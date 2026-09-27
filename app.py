@@ -349,7 +349,32 @@ def _gemini_call(api_key, model_id, system_text, payload_text):
     return json.loads(txt.strip())
 
 
-def gemini_translate(api_key, segments, model_id, progress_cb=None):
+def parse_glossary(raw):
+    """sidebar glossary box → [(foreign, burmese), ...].
+
+    ပုံစံ: တစ်ကြောင်းတစ်ခု၊ `John=ဂျွန်` — `=` မပါတာ/လွတ်နေတာတွေ ကျော်။
+    """
+    pairs = []
+    for line in (raw or "").splitlines():
+        line = line.strip()
+        if not line or "=" not in line:
+            continue
+        a, b = line.split("=", 1)
+        a, b = a.strip(), b.strip()
+        if a and b:
+            pairs.append((a, b))
+    return pairs
+
+
+def _glossary_prompt(pairs):
+    if not pairs:
+        return ""
+    lines = "\n".join(f"- {a} → {b}" for a, b in pairs)
+    return ("\nGlossary — ALWAYS use these exact Burmese forms for the "
+            f"names/terms below, do not transliterate them differently:\n{lines}\n")
+
+
+def gemini_translate(api_key, segments, model_id, progress_cb=None, glossary=None):
     """segments: [{'start','end','text'}] → [{'start','end','src','text'}].
 
     ပြန်မရတဲ့ အပိုင်းတွေက မူရင်းစာသားအတိုင်း ကျန်ပြီး failed_ids မှာ မှတ်ထားတယ်။
@@ -357,11 +382,12 @@ def gemini_translate(api_key, segments, model_id, progress_cb=None):
     items = [{"id": i, "text": s["text"]} for i, s in enumerate(segments)]
     out = {}
     failed = []
+    _sys = _TRANSLATE_SYS + _glossary_prompt(glossary)
     BATCH = 25
     batches = [items[i:i + BATCH] for i in range(0, len(items), BATCH)]
     for b, batch in enumerate(batches):
         try:
-            res = _gemini_call(api_key, model_id, _TRANSLATE_SYS,
+            res = _gemini_call(api_key, model_id, _sys,
                                json.dumps(batch, ensure_ascii=False))
             for row in res:
                 if isinstance(row, dict) and "id" in row and "text" in row:
@@ -378,7 +404,7 @@ def gemini_translate(api_key, segments, model_id, progress_cb=None):
         still = []
         for b, batch in enumerate([retry[i:i + BATCH] for i in range(0, len(retry), BATCH)]):
             try:
-                res = _gemini_call(api_key, model_id, _TRANSLATE_SYS,
+                res = _gemini_call(api_key, model_id, _sys,
                                    json.dumps(batch, ensure_ascii=False))
                 for row in res:
                     if isinstance(row, dict) and "id" in row and "text" in row:
@@ -433,14 +459,15 @@ _SHORTEN_SYS = (
 )
 
 
-def gemini_shorten(api_key, model_id, items):
+def gemini_shorten(api_key, model_id, items, glossary=None):
     """items: [{'id': seg_idx, 'text':..., 'target_chars':...}]
     → {seg_idx: တိုထားတဲ့စာသား}. ပျက်ရင်/ပြန်မရရင် အဲ့အပိုင်း ပါမလာဘူး
     (မူရင်းအတိုင်း ကျန်မယ်)."""
     payload = [{"id": x["id"], "text": x["text"],
                 "max_chars": x["target_chars"]} for x in items]
     try:
-        res = _gemini_call(api_key, model_id, _SHORTEN_SYS,
+        res = _gemini_call(api_key, model_id,
+                           _SHORTEN_SYS + _glossary_prompt(glossary),
                            json.dumps(payload, ensure_ascii=False))
     except Exception:
         return {}
@@ -456,6 +483,7 @@ def gemini_shorten(api_key, model_id, items):
 # ----------------------------- browser localStorage (key မပျောက်ဖို့)
 _LS_GEMINI = "audiodub_gemini_key"
 _LS_GROQ = "audiodub_groq_key"
+_LS_GLOSSARY = "audiodub_glossary"
 
 
 def _local_storage(st):
@@ -696,6 +724,82 @@ def parse_review_text(raw):
     return segs
 
 
+# မြန်မာစာမဟုတ်တဲ့ script တွေ (Tamil/Devanagari/Thai/Korean/CJK စသဖြင့်) —
+# ဘာသာပြန်အမှား/အကြွင်းအကျန်တွေ ဖမ်းဖို့
+_FOREIGN_SCRIPT_RE = re.compile(
+    r"[\u0B80-\u0BFF\u0900-\u097F\u0E00-\u0E7F\u3040-\u30FF\uAC00-\uD7AF\u4E00-\u9FFF]")
+# my-MM TTS ခန့်မှန်းအမြန်နှုန်း (စာလုံး/စက္ကန့်) — ပြဿနာလိုင်းရှာဖို့ ခန့်မှန်းချက်သက်သက်
+_EST_CPS = 14.0
+
+
+def find_problem_lines(segments, max_speed):
+    """အဆင့် ၄ အတွက် ပြဿနာရှိနိုင်တဲ့လိုင်းတွေ ရှာပေး.
+
+    → [(idx, "အကြောင်းရင်း"), ...]. TTS အစစ်မထုတ်ဘဲ ခန့်မှန်းချက်နဲ့ပဲ
+    စစ်တာ (အတိအကျမဟုတ် — သတိပေးတဲ့သဘော).
+    """
+    flags = []
+    for i, s in enumerate(segments):
+        slot = s["end"] - s["start"]
+        text = (s["text"] or "").strip()
+        reasons = []
+        if not text:
+            reasons.append("စာသားလွတ်နေတယ်")
+        else:
+            if slot > 0 and len(text) > slot * _EST_CPS * max_speed:
+                reasons.append("ရှည်လွန်းတယ် (အသံထွက်ရင် အချိန်မလောက်နိုင်ဘူး)")
+            if _FOREIGN_SCRIPT_RE.search(text):
+                reasons.append("မြန်မာမဟုတ်တဲ့ စာလုံး ပါနေတယ်")
+            src = (s.get("src") or "").strip()
+            if src and text == src and re.search(r"[A-Za-z]{3,}", text):
+                reasons.append("ဘာသာမပြန်ရသေးဘူး (မူရင်းအတိုင်း ကျန်နေတယ်)")
+        if reasons:
+            flags.append((i, " + ".join(reasons)))
+    return flags
+
+
+def mix_ducked(video_path, voiceover_mp3, out_mp3):
+    """မူရင်းအသံ (HQ) + dub အသံ → ducking နဲ့ ရော.
+
+    စကားမပြောတဲ့အပိုင်း → မူရင်းအသံ (သီချင်း/SFX) အပြည့်၊
+    dub အသံထွက်နေချိန် → sidechaincompress က မူရင်းအသံကို
+    အလိုအလျောက် ဖိချမယ် (attack/release ကြောင့် ချောချောမွေ့မွေ့)။
+    ဗီဒီယိုမှာ audio stream မရှိရင် None ပြန်မယ်။
+    """
+    # မူရင်းမှာ audio ရှိမရှိ စစ်
+    r = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "a",
+         "-show_entries", "stream=index", "-of", "csv=p=0", video_path],
+        capture_output=True, text=True)
+    if not r.stdout.strip():
+        return None
+    work = os.path.join(WORK_DIR, "ducktmp")
+    os.makedirs(work, exist_ok=True)
+    orig_hq = os.path.join(work, "orig_hq.mp3")
+    run(["ffmpeg", "-y", "-v", "error", "-i", video_path, "-vn",
+         "-ar", "44100", "-ac", "2", "-b:a", "128k", orig_hq])
+    fc = (
+        "[0:a]aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo[orig];"
+        "[1:a]aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo[key];"
+        "[orig][key]sidechaincompress=threshold=0.05:ratio=8:attack=250:release=600[d];"
+        "[d][key]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[m];"
+        "[m]alimiter=limit=0.95,aresample=44100,aformat=channel_layouts=stereo[out]"
+    )
+    run(["ffmpeg", "-y", "-v", "error", "-i", orig_hq, "-i", voiceover_mp3,
+         "-filter_complex", fc, "-map", "[out]",
+         "-c:a", "libmp3lame", "-b:a", "128k", out_mp3])
+    return out_mp3
+
+
+def _reset_review_keys(S):
+    """ဘာသာပြန် အသစ်ရတိုင်း review textarea + quick-fix key တွေ ရှင်း
+    (အဟောင်း widget state က စာအသစ်ကို မဖုံးစေဖို့)."""
+    if "review_text" in S:
+        del S["review_text"]
+    for k in [k for k in S.keys() if k.startswith("fixline_")]:
+        del S[k]
+
+
 # ------------------------------------------------------------------ UI
 def _init_state(st):
     defaults = {
@@ -767,6 +871,11 @@ def main():
             st.success("✅ Groq key ရှိတယ်")
         else:
             st.warning("⚠️ Groq key မရှိသေးဘူး (အဆင့် ၂ အတွက်လိုတယ်)")
+        # glossary: browser သိမ်းထားတာ ရှိရင် ပြန် load
+        if "glossary" not in S:
+            _gg = _ls_get(localS, _LS_GLOSSARY)
+            if _gg:
+                S["glossary"] = _gg
         if st.button("🔑 သိမ်းထားတဲ့ key တွေ ဖျက်",
                      help="browser မှာ မှတ်ထားတဲ့ key တွေကို ဖျက်မယ် "
                           "(ဥပမာ သူများဖုန်း/ကွန်ပျူတာနဲ့ သုံးပြီးရင်)"):
@@ -777,6 +886,20 @@ def main():
         model_id = st.text_input("Gemini model", value=GEMINI_MODEL_DEFAULT)
         max_speed = st.slider("အမြန်ဆုံးနှုန်း (အသံချုံ့တာ)", 1.0, 2.0, 1.3, 0.05,
                               help="စာရှည်ရင် ဒီနှုန်းအထိ မြန်ပေးမယ်")
+        voice = st.selectbox("အသံ", [VOICE_MALE, VOICE_FEMALE],
+                             format_func=lambda v: "🗣️ ကျား (Thiha)" if v == VOICE_MALE else "🗣️ မ (Nilar)")
+        if st.button("🔊 အသံ စမ်းနားထောင်ရန်", use_container_width=True,
+                     help="ရွေးထားတဲ့အသံနဲ့ နမူနာစာတစ်ကြောင်း ဖတ်ပြမယ် — "
+                          "အဆင့် ၅ မလုပ်ခင် အသံကြိုက်မကြိုက် စစ်လို့ရတယ်"):
+            _sample = "မင်္ဂလာပါ။ ဒီအသံနဲ့ ဇာတ်လမ်းကို ပြောပြမယ်။"
+            with st.spinner("အသံထုတ်နေတယ်..."):
+                _tp = tts_segment(_sample, voice, VOICE_FEMALE)
+            if _tp:
+                S["_voice_test"] = _tp
+            else:
+                st.error("အသံထုတ်မရဘူး — network / VPN စစ်ပါ")
+        if S.get("_voice_test") and os.path.isfile(S["_voice_test"]):
+            st.audio(S["_voice_test"])
         st.divider()
         st.markdown("#### ⚙️ ရွေးချယ်စရာ")
         auto_merge = st.checkbox("🔗 အပိုင်းသေးတွေ အလိုအလျောက်ပေါင်း", value=True,
@@ -786,8 +909,25 @@ def main():
         auto_shorten = st.checkbox("✂️ စာရှည်ရင် Gemini နဲ့ အလိုအလျောက်တိုပေး", value=True,
                                    help="အချိန်ကွက်ထဲ မဝင်တဲ့လိုင်းတွေကို Gemini က တိုတိုပြန်ရေးပြီး "
                                         "အသံပြန်ထုတ်မယ် (တစ်ကြိမ်သာ)။ ပိတ်ထားရင် အရင်အတိုင်း")
-        voice = st.selectbox("အသံ", [VOICE_MALE, VOICE_FEMALE],
-                             format_func=lambda v: "🗣️ ကျား (Thiha)" if v == VOICE_MALE else "🗣️ မ (Nilar)")
+        keep_bg = st.checkbox("🎵 နောက်ခံအသံ ချန်ထား (ducking)", value=True,
+                              help="စကားမပြောတဲ့အပိုင်း → မူရင်းအသံ (သီချင်း/SFX) အပြည့်; "
+                                   "dub အသံထွက်နေချိန် → မူရင်းအသံ အလိုအလျောက် တိုးသွားမယ်။ "
+                                   "ဗီဒီယိုမုဒ်အတွက်သာ။ ပိတ်ထားရင် အရင်အတိုင်း (dub အသံသက်သက်)")
+        st.markdown("##### 📖 နာမည်စာရင်း (Glossary)")
+        glossary_raw = st.text_area(
+            "ဇာတ်ကောင်နာမည်တွေ — တစ်ကြောင်းတစ်ခု",
+            key="glossary", height=90, placeholder="John=ဂျွန်\nSarah=ဆာရာ",
+            help="ဘာသာပြန်တိုင်း ဒီနာမည်တွေကို ဒီမြန်မာလိုအတိုင်း သုံးမယ် — "
+                 "Gemini က တစ်မျိုးတစ်မျိုး ပြောင်းပြန်မှာ စိုးလို့။ browser မှာ မှတ်ထားမယ်")
+        _g_stored = _ls_get(localS, _LS_GLOSSARY)
+        if glossary_raw.strip() != _g_stored:
+            if glossary_raw.strip():
+                _ls_set(localS, _LS_GLOSSARY, glossary_raw.strip(), "ls_set_glossary")
+            else:
+                _ls_del(localS, _LS_GLOSSARY, "ls_del_glossary")
+        glossary = parse_glossary(glossary_raw)
+        if glossary:
+            st.caption(f"✅ {len(glossary)} ခု မှတ်ထားပြီးပြီ")
         st.divider()
         st.markdown("#### 🗑️ အသစ်")
         if st.button("အစက ပြန်စ", use_container_width=True):
@@ -817,6 +957,7 @@ def main():
                   "dl_name", "_dl_for"):
             if k in S:
                 del S[k]
+        _reset_review_keys(S)
         S["_mode"] = mode
         st.rerun()
     S["_mode"] = mode
@@ -893,6 +1034,7 @@ def main():
                 # မြန်မာလို အဆင်သင့်မို့ ဘာသာပြန်စရာမလို — အဆင့် ၄ တန်းသွား
                 S.translations = [{"start": s["start"], "end": s["end"],
                                    "text": s["text"], "src": ""} for s in segs]
+            _reset_review_keys(S)
             st.success(f"✅ SRT ဖတ်ပြီးပြီ — အပိုင်း {len(segs)} ခု")
             st.rerun()
     _spidey_card_close()
@@ -972,11 +1114,12 @@ def main():
             try:
                 result, failed = gemini_translate(
                     api_key, S.src_segments, model_id.strip() or GEMINI_MODEL_DEFAULT,
-                    progress_cb=lambda f: prog.progress(f))
+                    progress_cb=lambda f: prog.progress(f), glossary=glossary)
             except Exception as e:
                 st.error(f"ဘာသာပြန်တာ ပျက်သွားတယ်: {e}")
                 st.stop()
             S.translations, S.final_segments, S.fitted = result, None, None
+            _reset_review_keys(S)
             prog.empty()
             if failed:
                 st.warning(f"⚠️ {len(failed)} ပိုင်း ပြန်မရလို့ မူရင်းစာသားအတိုင်း ထားထားတယ်")
@@ -994,9 +1137,40 @@ def main():
     if not S.translations:
         st.caption("အရင်ဆုံး အဆင့် ၃ မှာ ဘာသာပြန်ပါ။")
     else:
+        # 🔍 ပြဿနာလိုင်းရှာသူ — textarea မပေါ်ခင် အရင်စစ်တာ:
+        # ဒီအစဉ်လိုက်ထားမှ quick-fix က textarea�ဲ ဒီတစ်ပတ်တည်း တိုက်ရိုက်ရေးလို့ရမယ်
+        # (widget ပေါ်ပြီးမှ session_state ပြင်ရင် Streamlit က error ထုတ်လို့)
+        _cur_raw = S.get("review_text")
+        if _cur_raw is None:
+            _cur_raw = segments_to_review_text(S.translations)
+        try:
+            _work = parse_review_text(_cur_raw)
+            _parse_ok = True
+        except ValueError:
+            _work = S.translations
+            _parse_ok = False
+        _flags = find_problem_lines(_work, max_speed)
+        if _flags:
+            with st.expander(
+                    f"🔍 ပြဿနာရှိနိုင်တဲ့လိုင်းများ ({len(_flags)})", expanded=False):
+                st.caption("တစ်ခုချင်းနှိပ်ပြင်ရုံနဲ့ အောက်ကစာထဲ သူ့အလိုလို ဝင်သွားမယ်")
+                if not _parse_ok:
+                    st.warning("အောက်ကစာမှာ ပုံစံမှားနေလို့ ဒီမှာ တိုက်ရိုက်ပြင်မရဘူး — "
+                               "အရင်ပြင်လိုက်ပါ")
+                for (i, _reason) in _flags:
+                    _s = _work[i]
+                    _fk = f"fixline_{S.run_id}_{i}"
+                    _new = st.text_input(
+                        f"#{i + 1} `{fmt_ts(_s['start'])} → {fmt_ts(_s['end'])}` — {_reason}",
+                        value=_s["text"], key=_fk, disabled=not _parse_ok)
+                    if _parse_ok and _new != _s["text"]:
+                        _work[i]["text"] = _new
+                        S["review_text"] = segments_to_review_text(_work)
+                        st.rerun()  # flag စာရင်း ပြန်တွက်ဖို့
         raw = st.text_area(
             "တစ်ကြောင်းချင်း ပြင်လို့ရတယ် — အစဉ်မပြောင်းနဲ့၊ ပုံစံမဖျက်နဲ့",
-            value=segments_to_review_text(S.translations), height=300)
+            value=segments_to_review_text(S.translations), height=300,
+            key="review_text")
         _bc4, _ = st.columns([1, 2])
         with _bc4:
             _go4 = st.button("✔️ စစ်ပြီး ဆက်ရန်", type="primary",
@@ -1041,7 +1215,7 @@ def main():
                                expanded=False):
                     short = gemini_shorten(api_key,
                                            model_id.strip() or GEMINI_MODEL_DEFAULT,
-                                           items)
+                                           items, glossary=glossary)
                 applied = 0
                 for (i, _s, _e, t, _r) in report["overflow"]:
                     if i in short and short[i] != t:
@@ -1096,7 +1270,21 @@ def main():
                 out = os.path.join(WORK_DIR, S.run_id, "dubbed_video.mp4")
                 with st.status("အသံဆက် + ဗီဒီယိုနဲ့ပေါင်းနေတယ်...", expanded=False):
                     assemble_dubbed(S.fitted, S.duration, work_asm, dubbed)
-                    mux_video(S.video_path, dubbed, out)
+                    _final_audio = dubbed
+                    if keep_bg:
+                        _mixed = os.path.join(WORK_DIR, S.run_id, "dubbed_mixed.mp3")
+                        try:
+                            if mix_ducked(S.video_path, dubbed, _mixed):
+                                _final_audio = _mixed
+                                st.info("🎵 နောက်ခံအသံ (သီချင်း/SFX) ချန်ထားပြီး "
+                                        "dub အသံနဲ့ ရောထားတယ်")
+                            else:
+                                st.caption("မူရင်းဗီဒီယိုမှာ အသံလမ်းမရှိလို့ "
+                                           "dub အသံသက်သက် သုံးထားတယ်")
+                        except Exception as e:
+                            st.warning("ducking မအောင်မြင်လို့ dub အသံသက်သက် "
+                                       f"သုံးထားတယ်: {e}")
+                    mux_video(S.video_path, _final_audio, out)
                 S.out_mp4 = out
                 st.success("✅ ပြီးပြီ! အောက်မှာ download ချလို့ရပြီ")
         else:
