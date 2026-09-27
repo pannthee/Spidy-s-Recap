@@ -778,11 +778,16 @@ def mix_ducked(video_path, voiceover_mp3, out_mp3):
     orig_hq = os.path.join(work, "orig_hq.mp3")
     run(["ffmpeg", "-y", "-v", "error", "-i", video_path, "-vn",
          "-ar", "44100", "-ac", "2", "-b:a", "128k", orig_hq])
+    # NOTE: mono->stereo via aformat alone LOSES ~8dB on the voice (ffmpeg's
+    # default upmix matrix attenuates). Use pan to duplicate mono c0 to both
+    # stereo channels at full level instead. (assemble_dubbed always emits mono.)
+    # NOTE 2: [key] feeds TWO filters -> must asplit first; reusing a pad
+    # without asplit silently feeds silence to the second consumer (voice lost!).
     fc = (
         "[0:a]aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo[orig];"
-        "[1:a]aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo[key];"
-        "[orig][key]sidechaincompress=threshold=0.05:ratio=8:attack=250:release=600[d];"
-        "[d][key]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[m];"
+        "[1:a]pan=stereo|c0=c0|c1=c0,aresample=44100,aformat=sample_fmts=fltp,asplit=2[k1][k2];"
+        "[orig][k1]sidechaincompress=threshold=0.05:ratio=8:attack=250:release=600[d];"
+        "[d][k2]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[m];"
         "[m]alimiter=limit=0.95,aresample=44100,aformat=channel_layouts=stereo[out]"
     )
     run(["ffmpeg", "-y", "-v", "error", "-i", orig_hq, "-i", voiceover_mp3,
