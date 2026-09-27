@@ -3,6 +3,8 @@
 
 RecapKit ရဲ့ Audio Dub feature ကို တစ်ယောက်စာသုံးဖို့ ပြန်ဆောက်ထားတာ။
 Login မလို၊ ငွေမလို — ကိုယ့် Streamlit Cloud မှာ run တယ်။
+API key တွေကို browser localStorage မှာ မှတ်ထားတယ် — တစ်ခါထည့်ရုံနဲ့
+hard refresh ဆွဲလည်း မပျောက်ဘူး (server Secrets ရှိရင် အဲ့ဒါက အဓိက)။
 
 Pipeline:
   1. MP4 တင် → ffmpeg နဲ့ audio ထုတ် (mp3 16k mono, 32k — Groq 25MB ကန့်သတ်ချက်နဲ့ကိုက်အောင်)
@@ -266,6 +268,49 @@ def gemini_shorten(api_key, model_id, items):
     return out
 
 
+# ----------------------------- browser localStorage (key မပျောက်ဖို့)
+_LS_GEMINI = "audiodub_gemini_key"
+_LS_GROQ = "audiodub_groq_key"
+
+
+def _local_storage(st):
+    """browser localStorage component — package မရှိရင်/ပျက်ရင် None."""
+    try:
+        from streamlit_local_storage import LocalStorage
+        return LocalStorage(key="audiodub_ls")
+    except Exception:
+        return None
+
+
+def _ls_get(localS, k):
+    try:
+        return (localS.getItem(k) or "").strip() if localS else ""
+    except Exception:
+        return ""
+
+
+def _ls_set(localS, k, v, ckey):
+    try:
+        if localS and v:
+            localS.setItem(k, v, key=ckey)
+    except Exception:
+        pass
+
+
+def _ls_del(localS, k, ckey):
+    # eraseItem = browser localStorage ကနေ တကယ်ဖျက် (deleteItem က value ပဲ reset);
+    # memory ထဲက storedItems ကိုပါ ထုတ်
+    try:
+        if localS:
+            localS.eraseItem(k, key=ckey)
+            try:
+                localS.storedItems.pop(k, None)
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+
 # ------------------------------------------------- step 5: TTS + slot fit
 def _valid_audio(path):
     return os.path.isfile(path) and os.path.getsize(path) > 1000
@@ -459,23 +504,56 @@ def main():
     # ---------------------------------------------------------- sidebar
     with st.sidebar:
         st.header("⚙️ ဆက်တင်")
-        key_input = st.text_input("Gemini API Key", type="password",
-                                  placeholder="AIzaSy...", help="စာသားဘာသာပြန်ဖို့သုံး")
+        localS = _local_storage(st)
+        # key ဖျက်တာ — widget တွေ မပေါ်ခင် (run အစ) မှာ လုပ်
+        if S.get("_clear_keys"):
+            _ls_del(localS, _LS_GEMINI, "ls_del_gemini")
+            _ls_del(localS, _LS_GROQ, "ls_del_groq")
+            for _k in ("gemini_key", "groq_key"):
+                if _k in S:
+                    del S[_k]
+            del S["_clear_keys"]
+        # --- Gemini key: server secret > ရိုက်ထည့်ထား > browser သိမ်းထား ---
         env_key = os.environ.get("GEMINI_API_KEY", "").strip()
-        api_key = key_input.strip() or env_key
+        if not env_key and "gemini_key" not in S:
+            _sg = _ls_get(localS, _LS_GEMINI)
+            if _sg:
+                S["gemini_key"] = _sg
+        key_input = st.text_input("Gemini API Key", type="password", key="gemini_key",
+                                  placeholder="AIzaSy...",
+                                  help="စာသားဘာသာပြန်ဖို့သုံး — တစ်ခါထည့်ထားရင် browser မှာ "
+                                       "မှတ်ထားမယ်၊ hard refresh ဆွဲလည်း မပျောက်ဘူး")
+        typed_gemini = key_input.strip()
+        if typed_gemini and typed_gemini != _ls_get(localS, _LS_GEMINI):
+            _ls_set(localS, _LS_GEMINI, typed_gemini, "ls_set_gemini")
+        api_key = typed_gemini or env_key
         if api_key:
             st.success("✅ Gemini key ရှိတယ်")
         else:
             st.warning("⚠️ Gemini key မရှိသေးဘူး (အဆင့် ၃ အတွက်လိုတယ်)")
-        groq_input = st.text_input("Groq API Key", type="password",
-                                   placeholder="gsk_...",
-                                   help="အသံမှ စာသားထုတ်ဖို့သုံး — console.groq.com မှာ အလကားယူလို့ရ")
+        # --- Groq key: server secret > ရိုက်ထည့်ထား > browser သိမ်းထား ---
         env_groq = os.environ.get("GROQ_API_KEY", "").strip()
-        groq_key = groq_input.strip() or env_groq
+        if not env_groq and "groq_key" not in S:
+            _sq = _ls_get(localS, _LS_GROQ)
+            if _sq:
+                S["groq_key"] = _sq
+        groq_input = st.text_input("Groq API Key", type="password", key="groq_key",
+                                   placeholder="gsk_...",
+                                   help="အသံမှ စာသားထုတ်ဖို့သုံး — console.groq.com မှာ အလကားယူလို့ရ။ "
+                                        "တစ်ခါထည့်ထားရင် browser မှာ မှတ်ထားမယ်")
+        typed_groq = groq_input.strip()
+        if typed_groq and typed_groq != _ls_get(localS, _LS_GROQ):
+            _ls_set(localS, _LS_GROQ, typed_groq, "ls_set_groq")
+        groq_key = typed_groq or env_groq
         if groq_key:
             st.success("✅ Groq key ရှိတယ်")
         else:
             st.warning("⚠️ Groq key မရှိသေးဘူး (အဆင့် ၂ အတွက်လိုတယ်)")
+        if st.button("🔑 သိမ်းထားတဲ့ key တွေ ဖျက်",
+                     help="browser မှာ မှတ်ထားတဲ့ key တွေကို ဖျက်မယ် "
+                          "(ဥပမာ သူများဖုန်း/ကွန်ပျူတာနဲ့ သုံးပြီးရင်)"):
+            S["_clear_keys"] = True
+            st.rerun()
         model_id = st.text_input("Gemini model", value=GEMINI_MODEL_DEFAULT)
         max_speed = st.slider("အမြန်ဆုံးနှုန်း (အသံချုံ့တာ)", 1.0, 2.0, 1.3, 0.05,
                               help="စာရှည်ရင် ဒီနှုန်းအထိ မြန်ပေးမယ်")
