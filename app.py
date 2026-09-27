@@ -77,20 +77,25 @@ _SPIDEY_CSS = """<style>
     border-color: #FF7A7A; box-shadow: 0 0 18px rgba(230,36,41,.65); }
 .spidey-step.skip { opacity: .4; }
 
-/* --- ကတ် --- */
-.spidey-card { background: rgba(18,18,36,.78); border: 1px solid rgba(230,36,41,.30);
-    border-radius: 18px; margin: 14px 0; overflow: hidden;
-    box-shadow: 0 8px 28px rgba(0,0,0,.5); }
-.spidey-card-head { display: flex; align-items: center; gap: 12px; padding: 11px 18px;
+/* --- ကတ် (st.container(border=True) အစစ် — အထဲမှာ content တကယ်ရှိတယ်) --- */
+div[data-testid="stVerticalBlockBorderWrapper"] {
+    background: rgba(18,18,36,.78);
+    border: 1px solid rgba(230,36,41,.30) !important;
+    border-radius: 18px;
+    box-shadow: 0 8px 28px rgba(0,0,0,.5);
+}
+.spidey-stephead {
+    display: flex; align-items: center; gap: 12px;
+    padding: 10px 16px; margin-bottom: 6px;
     background: linear-gradient(90deg, rgba(230,36,41,.25), rgba(43,92,230,.14));
-    border-bottom: 1px solid rgba(230,36,41,.28); }
+    border: 1px solid rgba(230,36,41,.28);
+    border-radius: 12px;
+    font-size: 1.12rem; font-weight: 800; color: #fff;
+}
 .spidey-num { width: 34px; height: 34px; border-radius: 50%; flex-shrink: 0;
     display: flex; align-items: center; justify-content: center;
     background: linear-gradient(135deg,#F03A3A,#8f1013); color: #fff;
     font-weight: 800; font-size: 1.05rem; box-shadow: 0 0 14px rgba(230,36,41,.8); }
-.spidey-card-title { font-size: 1.12rem; font-weight: 800; color: #fff; }
-.spidey-card-body { padding: 16px 18px 20px; }
-.spidey-card-body h3 { border-left: 4px solid #E62429; padding-left: 12px !important; }
 
 /* --- ခလုတ် --- */
 div[data-testid*="stBaseButton-primary"] > button, .stButton > button[kind="primary"] {
@@ -134,20 +139,31 @@ div[data-testid="stProgress"] > div > div { box-shadow: 0 0 12px rgba(230,36,41,
 </style>"""
 
 
+_card_ctx_stack = []
+
+
 def _spidey_card_open(n, title):
     import streamlit as st
+    # open/close ကို function နှစ်ခုနဲ့ ခွဲထားလို့ container ရဲ့
+    # __enter__/__exit__ ကို ကိုယ်တိုင် မောင်းတာ — `with st.container():` နဲ့ အတူတူပဲ။
+    # (ကြားထဲမှာ st.rerun/st.stop ဖြစ်ရင် run ပြတ်သွားမယ် — run အသစ်မှာ
+    #  Streamlit က context_dg_stack ကို အစက ပြန် reset လုပ်ပြီးသားမို့
+    #  ဒီမှာ ကျန်နေတဲ့ အဟောင်း ctx ကို လွှတ်ပစ်လိုက်ရုံပဲ)
+    if _card_ctx_stack:
+        _card_ctx_stack.clear()
+    ctx = st.container(border=True)
+    ctx.__enter__()
+    _card_ctx_stack.append(ctx)
     st.markdown(
-        f'<div class="spidey-card"><div class="spidey-card-head">'
-        f'<span class="spidey-num">{n}</span>'
-        f'<span class="spidey-card-title">{title}</span></div>'
-        '<div class="spidey-card-body">',
+        f'<div class="spidey-stephead"><span class="spidey-num">{n}</span>'
+        f"<span>{title}</span></div>",
         unsafe_allow_html=True,
     )
 
 
 def _spidey_card_close():
-    import streamlit as st
-    st.markdown("</div></div>", unsafe_allow_html=True)
+    ctx = _card_ctx_stack.pop()
+    ctx.__exit__(None, None, None)
 
 
 def _spidey_steps(S, is_video):
