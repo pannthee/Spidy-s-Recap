@@ -187,6 +187,23 @@ def _spidey_steps(S, is_video):
 
 GROQ_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
 GROQ_MODEL = "whisper-large-v3-turbo"  # sub-translator မှာ အလုပ်ဖြစ်နေတဲ့ model
+# Whisper က ဘာသာစကား auto-detect မှားတတ်လို့ (ဥပမာ English ကို Tamil လို့ ထင်တာ)
+# သုံးသူ တိတိကျကျ ရွေးနိုင်အောင် — (ပြသမယ့်အမည်, Whisper code)
+_SRC_LANGS = [
+    ("🤖 Auto (အလိုအလျောက်)", None),
+    ("🇬🇧 English", "en"),
+    ("🇰🇷 Korean", "ko"),
+    ("🇯🇵 Japanese", "ja"),
+    ("🇨🇳 Chinese", "zh"),
+    ("🇹🇭 Thai", "th"),
+    ("🇻🇳 Vietnamese", "vi"),
+    ("🇮🇩 Indonesian", "id"),
+    ("🇪🇸 Spanish", "es"),
+    ("🇫🇷 French", "fr"),
+    ("🇩🇪 German", "de"),
+    ("🇷🇺 Russian", "ru"),
+    ("🇮🇳 Hindi", "hi"),
+]
 GEMINI_MODEL_DEFAULT = "gemini-3.5-flash-lite"   # Script-writer / sub-translator မှာ အလုပ်ဖြစ်နေတဲ့ model
 GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta/models/"
 VOICE_MALE = "my-MM-ThihaNeural"
@@ -234,12 +251,15 @@ def silence(path, seconds, sr=24000):
 
 
 # ------------------------------------------------------- step 2: transcribe
-def transcribe_audio(audio_path, api_key):
+def transcribe_audio(audio_path, api_key, language=None):
     """Groq Whisper API နဲ့ transcribe လုပ် → {'language':..., 'segments':[{'start','end','text'}]}.
 
-    sub-translator မှာ အလုပ်ဖြစ်နေတဲ့ request ပုံစံအတိုင်း (whisper-large-v3-turbo,
-    verbose_json). Streamlit Cloud RAM ကန့်သတ်ချက်ကြောင့် local faster-whisper
-    အစား ဒီ API ကို သုံးထားတာ — အောက်က code တွေထိစရာမလိုဘူး။
+    language: Whisper ISO code (ဥပမာ "en") — ပေးရင် auto-detect မလုပ်ဘဲ
+    အဲ့ဘာသာစကားအတိုင်း နားထောင်မယ်။ None ဆို auto-detect (အရင်အတိုင်း)။
+
+    sub-translator မှာ အလုပ်ဖြစ်နေတဲ့ request ပုံစံအတိုင်း
+    (whisper-large-v3-turbo, verbose_json) — Streamlit Cloud RAM ကန့်သတ်ချက်ကြောင့်
+    local faster-whisper အစား ဒီ API ကို သုံးထားတာ။
     """
     import requests  # local import
     size = os.path.getsize(audio_path)
@@ -250,6 +270,8 @@ def transcribe_audio(audio_path, api_key):
         data = f.read()
     files = {"file": (os.path.basename(audio_path), data, "audio/mpeg")}
     form = {"model": GROQ_MODEL, "response_format": "verbose_json"}
+    if language:
+        form["language"] = language
     headers = {"Authorization": f"Bearer {api_key}"}
     try:
         r = requests.post(GROQ_URL, headers=headers, files=files,
@@ -868,6 +890,13 @@ def main():
     elif not groq_key:
         st.warning("⚠️ Groq API Key ထည့်မှ စာသားထုတ်လို့ရမယ် (ဘယ်ဘက် sidebar)။")
     else:
+        _lang_label = st.selectbox(
+            "🎙️ မူရင်းဘာသာစကား",
+            [lbl for lbl, _ in _SRC_LANGS], key="src_lang",
+            help="Whisper က ဘာသာစကား မှားသိတတ်တယ် (ဥပမာ English အသံကို "
+                 "Tamil စာနဲ့ ရေးချတာ) — ဗီဒီယိုက ဘာဘာသာစကားလဲ သိရင် "
+                 "ဒီမှာ တိတိကျကျ ရွေးလိုက်။ မသိရင် Auto ထားခဲ့။")
+        _lang_code = dict(_SRC_LANGS)[_lang_label]
         _bc2, _ = st.columns([1, 2])
         with _bc2:
             _go2 = st.button("🎤 နားထောင်ပြီး စာသားထုတ်ရန်", type="primary",
@@ -875,7 +904,8 @@ def main():
         if _go2:
             with st.status("Groq Whisper API နဲ့ နားထောင်နေတယ်...", expanded=True) as stt:
                 try:
-                    data = transcribe_audio(S.audio_path, groq_key)
+                    data = transcribe_audio(S.audio_path, groq_key,
+                                            language=_lang_code)
                 except Exception as e:
                     stt.update(state="error")
                     st.error(str(e))
