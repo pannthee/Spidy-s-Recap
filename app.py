@@ -453,6 +453,35 @@ def segments_to_srt(segments):
     return "\n".join(lines)
 
 
+_SRT_TS_LINE = re.compile(
+    r"(\d+:[\d:.,]+)\s*-->\s*(\d+:[\d:.,]+)")
+
+
+def parse_srt(text):
+    """SRT ဖိုင်စာသား → [{start, end, text}]. စာသားအပိုဒ်များရင် space နဲ့ဆက်."""
+    text = text.replace("\ufeff", "").replace("\r\n", "\n").replace("\r", "\n")
+    segs = []
+    for block in re.split(r"\n\s*\n", text.strip()):
+        lines = [l for l in block.strip().split("\n") if l.strip()]
+        if not lines:
+            continue
+        ts_idx = 0
+        if "-->" not in lines[0] and len(lines) > 1:
+            ts_idx = 1  # ပထမလိုင်းက နံပါတ်စဉ်
+        m = _SRT_TS_LINE.search(lines[ts_idx]) if ts_idx < len(lines) else None
+        if not m:
+            continue
+        try:
+            start, end = parse_ts(m.group(1)), parse_ts(m.group(2))
+        except (ValueError, IndexError):
+            continue
+        txt = " ".join(l.strip() for l in lines[ts_idx + 1:] if l.strip())
+        if end > start and txt:
+            segs.append({"start": start, "end": end, "text": txt})
+    segs.sort(key=lambda x: x["start"])
+    return segs
+
+
 _REVIEW_LINE = re.compile(
     r"(\d+:\d+:[\d.,]+)\s*-->\s*(\d+:[\d:.,]+)\s*\|\s*(.*)")
 
@@ -487,8 +516,9 @@ def _init_state(st):
     defaults = {
         "run_id": None, "video_path": None, "audio_path": None, "duration": 0.0,
         "src_segments": None, "translations": None, "final_segments": None,
-        "fitted": None, "fit_report": None, "out_mp4": None, "lang": "",
-        "auto_shortened": False,
+        "fitted": None, "fit_report": None, "out_mp4": None, "out_mp3": None,
+        "lang": "", "auto_shortened": False,
+        "srt_name": "", "srt_is_my": False, "dl_base": "",
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -574,35 +604,95 @@ def main():
 
     # ---------------------------------------------------------- main
     st.header("🎙️ Audio Dub Studio")
-    st.caption("ဗီဒီယိုထဲက စကားပြောအပိုင်းတွေကို မြန်မာအသံနဲ့ အစားထိုးပေးတယ် — "
-               "မူရင်းဗီဒီယိုအတိုင်း၊ မူရင်းအချိန်အတိုင်း။")
+    st.caption("ဗီဒီယို ဒါမှမဟုတ် SRT ဖိုင်ကနေ မြန်မာအသံထွက်ပေးတယ် — "
+               "မူရင်းအချိန်အတိုင်း။")
 
-    # ---- အဆင့် ၁: upload
-    st.subheader("၁။ ဗီဒီယိုတင်ပါ")
-    up = st.file_uploader("MP4 / MOV / WEBM ဖိုင်ရွေးပါ", type=["mp4", "mov", "webm"])
-    if S.video_path:
-        st.info(f"📁 {os.path.basename(S.video_path)} — {S.duration:.1f} စက္ကန့်")
-    if up is not None and st.button("▶️ အသံထုတ်ယူရန်"):
-        run_id = uuid.uuid4().hex[:8]
-        rd = os.path.join(WORK_DIR, run_id)
-        os.makedirs(rd, exist_ok=True)
-        vpath = os.path.join(rd, up.name)
-        with open(vpath, "wb") as f:
-            f.write(up.getbuffer())
-        wpath = os.path.join(rd, "audio.mp3")
-        with st.status("ffmpeg နဲ့ အသံထုတ်နေတယ်...", expanded=False):
-            run(["ffmpeg", "-y", "-v", "error", "-i", vpath,
-                 "-ar", "16000", "-ac", "1", "-b:a", "32k", wpath])
-            d = dur(vpath)
-        S.update(run_id=run_id, video_path=vpath, audio_path=wpath, duration=d,
-                 src_segments=None, translations=None, final_segments=None,
-                 fitted=None, fit_report=None, out_mp4=None)
-        st.success(f"✅ အသံထုတ်ပြီးပြီ — ဗီဒီယို {d:.1f} စက္ကန့်")
+    mode = st.radio("အရင်းအမြစ်", ["🎬 ဗီဒီယို", "📄 SRT ဖိုင်"], horizontal=True,
+                    key="src_mode",
+                    help="ဗီဒီယိုတင်ပြီး အစအဆုံးလုပ်မလား၊ "
+                         "SRT ဖိုင်အဆင်သင့်ရှိလို့ အဲ့ဒါကနေပဲ ဆက်လုပ်မလား")
+    if S.get("_mode") is not None and S["_mode"] != mode:
+        for k in ("run_id", "video_path", "audio_path", "duration",
+                  "src_segments", "translations", "final_segments",
+                  "fitted", "fit_report", "out_mp4", "out_mp3", "lang",
+                  "auto_shortened", "srt_name", "srt_is_my", "dl_base",
+                  "dl_name", "_dl_for"):
+            if k in S:
+                del S[k]
+        S["_mode"] = mode
         st.rerun()
+    S["_mode"] = mode
+    is_video = (mode == "🎬 ဗီဒီယို")
 
-    # ---- အဆင့် ၂: transcribe
+    # ---- အဆင့် ၁: upload (ဗီဒီယို / SRT)
+    if is_video:
+        st.subheader("၁။ ဗီဒီယိုတင်ပါ")
+        up = st.file_uploader("MP4 / MOV / WEBM ဖိုင်ရွေးပါ", type=["mp4", "mov", "webm"])
+        if S.video_path:
+            st.info(f"📁 {os.path.basename(S.video_path)} — {S.duration:.1f} စက္ကန့်")
+        if up is not None and st.button("▶️ အသံထုတ်ယူရန်"):
+            run_id = uuid.uuid4().hex[:8]
+            rd = os.path.join(WORK_DIR, run_id)
+            os.makedirs(rd, exist_ok=True)
+            vpath = os.path.join(rd, up.name)
+            with open(vpath, "wb") as f:
+                f.write(up.getbuffer())
+            wpath = os.path.join(rd, "audio.mp3")
+            with st.status("ffmpeg နဲ့ အသံထုတ်နေတယ်...", expanded=False):
+                run(["ffmpeg", "-y", "-v", "error", "-i", vpath,
+                     "-ar", "16000", "-ac", "1", "-b:a", "32k", wpath])
+                d = dur(vpath)
+            S.update(run_id=run_id, video_path=vpath, audio_path=wpath, duration=d,
+                     src_segments=None, translations=None, final_segments=None,
+                     fitted=None, fit_report=None, out_mp4=None, out_mp3=None,
+                     dl_base=os.path.splitext(up.name)[0])
+            st.success(f"✅ အသံထုတ်ပြီးပြီ — ဗီဒီယို {d:.1f} စက္ကန့်")
+            st.rerun()
+    else:
+        st.subheader("၁။ SRT ဖိုင်တင်ပါ")
+        srt_up = st.file_uploader("SRT ဖိုင်ရွေးပါ", type=["srt"], key="srt_up")
+        srt_lang_choice = st.radio(
+            "SRT က ဘယ်ဘာသာစကားလဲ",
+            ["🌐 ဘာသာခြား (ဘာသာပြန်မယ်)", "✅ မြန်မာလို အဆင်သင့် (တိုက်ရိုက်အသံထုတ်မယ်)"],
+            horizontal=True, key="srt_lang_radio")
+        is_my = srt_lang_choice.startswith("✅")
+        if S.src_segments:
+            st.info(f"📄 {S.srt_name} — အပိုင်း {len(S.src_segments)} ခု")
+        if srt_up is not None and st.button("▶️ SRT ဖတ်ရန်"):
+            raw = srt_up.getbuffer()
+            text = None
+            for enc in ("utf-8-sig", "utf-16", "cp1252"):
+                try:
+                    text = bytes(raw).decode(enc)
+                    break
+                except (UnicodeDecodeError, ValueError):
+                    continue
+            segs = parse_srt(text or "")
+            if not segs:
+                st.error("SRT ထဲမှာ စာသားမတွေ့ဘူး — ဖိုင်စစ်ကြည့်ပါ")
+                st.stop()
+            run_id = uuid.uuid4().hex[:8]
+            rd = os.path.join(WORK_DIR, run_id)
+            os.makedirs(rd, exist_ok=True)
+            S.update(run_id=run_id, video_path=None, audio_path=None,
+                     duration=segs[-1]["end"],
+                     src_segments=segs, lang="",
+                     translations=None, final_segments=None,
+                     fitted=None, fit_report=None, out_mp4=None, out_mp3=None,
+                     srt_name=srt_up.name, srt_is_my=is_my,
+                     dl_base=os.path.splitext(srt_up.name)[0])
+            if is_my:
+                # မြန်မာလို အဆင်သင့်မို့ ဘာသာပြန်စရာမလို — အဆင့် ၄ တန်းသွား
+                S.translations = [{"start": s["start"], "end": s["end"],
+                                   "text": s["text"], "src": ""} for s in segs]
+            st.success(f"✅ SRT ဖတ်ပြီးပြီ — အပိုင်း {len(segs)} ခု")
+            st.rerun()
+
+    # ---- အဆင့် ၂: transcribe (ဗီဒီယိုမုဒ်သာ)
     st.subheader("၂။ အသံမှ စာသားထုတ်")
-    if not S.audio_path:
+    if not is_video:
+        st.info("📄 SRT ဖိုင်ကနေ တိုက်ရိုက်ရပြီးမို့ ဒီအဆင့်မလိုဘူး — အဆင့် ၃ ကို ဆက်သွားပါ။")
+    elif not S.audio_path:
         st.caption("အရင်ဆုံး အဆင့် ၁ မှာ ဗီဒီယိုတင်ပါ။")
     elif not groq_key:
         st.warning("⚠️ Groq API Key ထည့်မှ စာသားထုတ်လို့ရမယ် (ဘယ်ဘက် sidebar)။")
@@ -638,7 +728,15 @@ def main():
     # ---- အဆင့် ၃: translate
     st.subheader("၃။ မြန်မာလို ဘာသာပြန်")
     if not S.src_segments:
-        st.caption("အရင်ဆုံး အဆင့် ၂ မှာ စာသားထုတ်ပါ။")
+        st.caption("အရင်ဆုံး အဆင့် ၁ မှာ " +
+                   ("ဗီဒီယိုတင်" if is_video else "SRT ဖိုင်တင်") + "ပါ။")
+    elif S.get("srt_is_my"):
+        st.info("✅ SRT က မြန်မာလိုအဆင်သင့်မို့ ဘာသာပြန်စရာမလိုဘူး — "
+                "အဆင့် ၄ ကို ဆက်သွားပါ။")
+        if S.translations:
+            with st.expander("SRT စာသား ကြည့်"):
+                for s in S.translations[:30]:
+                    st.write(f"`{fmt_ts(s['start'])}` {s['text']}")
     elif not api_key:
         st.warning("⚠️ Gemini API key ထည့်မှ ဘာသာပြန်လို့ရမယ် (ဘယ်ဘက် sidebar)။")
     else:
@@ -673,7 +771,7 @@ def main():
         if st.button("✔️ စစ်ပြီး ဆက်ရန်"):
             try:
                 S.final_segments = parse_review_text(raw)
-                S.fitted, S.out_mp4 = None, None
+                S.fitted, S.out_mp4, S.out_mp3 = None, None, None
                 st.success(f"✅ {len(S.final_segments)} ပိုင်း အတည်ပြုပြီးပြီ")
             except ValueError as e:
                 st.error(str(e))
@@ -718,7 +816,7 @@ def main():
                     S.auto_shortened = True
                     st.info(f"✂️ Gemini က {applied} လိုင်း တိုအောင်ပြင်ပြီးပြီ — "
                             "အသံပြန်ထုတ်ထားတယ်")
-            S.fitted, S.fit_report, S.out_mp4 = fitted, report, None
+            S.fitted, S.fit_report, S.out_mp4, S.out_mp3 = fitted, report, None, None
             prog.empty(); curlbl.empty()
             st.success(f"✅ အပိုင်း {len(fitted)} ပိုင်း အသံထွက်ပြီးပြီ")
         if S.fit_report:
@@ -741,27 +839,41 @@ def main():
                     st.write(f"#{i + 1} `{fmt_ts(s_)}`: {t_}")
 
     # ---- အဆင့် ၆: assemble + download
-    st.subheader("၆။ ဗီဒီယိုနဲ့ပေါင်း + Download")
+    if is_video:
+        st.subheader("၆။ ဗီဒီယိုနဲ့ပေါင်း + Download")
+    else:
+        st.subheader("၆။ အသံဖိုင် Download")
     if not S.fitted:
         st.caption("အရင်ဆုံး အဆင့် ၅ မှာ အသံထုတ်ပါ။")
     else:
-        if st.button("🎬 မူရင်းဗီဒီယိုနဲ့ ပေါင်းရန်"):
-            work_asm = os.path.join(WORK_DIR, S.run_id, "asm")
-            dubbed = os.path.join(WORK_DIR, S.run_id, "dubbed_audio.mp3")
-            out = os.path.join(WORK_DIR, S.run_id, "dubbed_video.mp4")
-            with st.status("အသံဆက် + ဗီဒီယိုနဲ့ပေါင်းနေတယ်...", expanded=False):
-                assemble_dubbed(S.fitted, S.duration, work_asm, dubbed)
-                mux_video(S.video_path, dubbed, out)
-            S.out_mp4 = out
-            st.success("✅ ပြီးပြီ! အောက်မှာ download ချလို့ရပြီ")
-        if S.out_mp4 and os.path.isfile(S.out_mp4) or S.final_segments:
-            # ဗီဒီယိုအသစ်တင်တိုင်း အမည်အကြံကို refresh (ရိုက်ထားတာကို မဖျက်)
+        if is_video:
+            if st.button("🎬 မူရင်းဗီဒီယိုနဲ့ ပေါင်းရန်"):
+                work_asm = os.path.join(WORK_DIR, S.run_id, "asm")
+                dubbed = os.path.join(WORK_DIR, S.run_id, "dubbed_audio.mp3")
+                out = os.path.join(WORK_DIR, S.run_id, "dubbed_video.mp4")
+                with st.status("အသံဆက် + ဗီဒီယိုနဲ့ပေါင်းနေတယ်...", expanded=False):
+                    assemble_dubbed(S.fitted, S.duration, work_asm, dubbed)
+                    mux_video(S.video_path, dubbed, out)
+                S.out_mp4 = out
+                st.success("✅ ပြီးပြီ! အောက်မှာ download ချလို့ရပြီ")
+        else:
+            if st.button("🎧 အသံဖိုင်ထုတ်ရန်"):
+                work_asm = os.path.join(WORK_DIR, S.run_id, "asm")
+                out = os.path.join(WORK_DIR, S.run_id, "dubbed_voiceover.mp3")
+                with st.status("အသံဆက်နေတယ်...", expanded=False):
+                    assemble_dubbed(S.fitted, S.duration, work_asm, out)
+                S.out_mp3 = out
+                st.success("✅ ပြီးပြီ! အောက်မှာ download ချလို့ရပြီ")
+        _has_out = ((S.out_mp4 and os.path.isfile(S.out_mp4)) or
+                    (S.out_mp3 and os.path.isfile(S.out_mp3)))
+        if _has_out or S.final_segments:
+            # ဖိုင်အသစ်တင်တိုင်း အမည်အကြံကို refresh (ရိုက်ထားတာကို မဖျက်)
             if S.get("_dl_for") != S.run_id:
-                _base = os.path.splitext(os.path.basename(S.video_path or "video"))[0]
+                _base = (S.get("dl_base") or "audio").strip() or "audio"
                 S["dl_name"] = f"{_base}_dubbed"
                 S["_dl_for"] = S.run_id
             st.text_input("📝 ဖိုင်နာမည်", key="dl_name",
-                          help="download ချမယ့်အမည် — .mp4/.srt ကို သူ့အလိုလို ထည့်ပေးမယ်")
+                          help="download ချမယ့်အမည် — .mp4/.mp3/.srt ကို သူ့အလိုလို ထည့်ပေးမယ်")
             _dl = re.sub(r'[\\/:*?"<>|]', "_", (S.get("dl_name") or "").strip())
             if not _dl:
                 _dl = "dubbed"
@@ -769,6 +881,10 @@ def main():
             with open(S.out_mp4, "rb") as f:
                 st.download_button("⬇️ Dubbed MP4 ရယူ", f,
                                    file_name=f"{_dl}.mp4", mime="video/mp4")
+        if S.out_mp3 and os.path.isfile(S.out_mp3):
+            with open(S.out_mp3, "rb") as f:
+                st.download_button("⬇️ Dubbed MP3 ရယူ", f,
+                                   file_name=f"{_dl}.mp3", mime="audio/mpeg")
         if S.final_segments:
             st.download_button("⬇️ SRT ရယူ",
                                segments_to_srt(S.final_segments),
