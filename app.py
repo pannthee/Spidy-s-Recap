@@ -38,77 +38,152 @@ WORK_DIR = os.path.join(APP_DIR, "work")
 os.makedirs(CACHE_TTS, exist_ok=True)
 os.makedirs(WORK_DIR, exist_ok=True)
 
-# ---------------------------------------------------------- 💜 Neon Creator theme CSS
-_NEON_CSS = """<style>
-/* နောက်ခံ — ခရမ်းရောင် nebula */
+# ---------------------------------------------------------- 🕷️ Spider-Man theme
+_SPIDEY_CSS = """<style>
+@import url('https://fonts.googleapis.com/css2?family=Bangers&display=swap');
+
+/* --- နောက်ခံ: ညမှောင် + spider web --- */
 .stApp {
-    background:
-        radial-gradient(1200px 600px at 85% -10%, rgba(192,38,211,.16), transparent 60%),
-        radial-gradient(900px 500px at 5% 110%, rgba(99,102,241,.14), transparent 60%),
-        #0D0716;
+    background-color: #0A0A14;
+    background-image:
+        url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='260' height='260' viewBox='0 0 260 260'%3E%3Cg fill='none' stroke='%23E62429' stroke-opacity='0.06'%3E%3Ccircle cx='260' cy='0' r='55'/%3E%3Ccircle cx='260' cy='0' r='105'/%3E%3Ccircle cx='260' cy='0' r='155'/%3E%3Ccircle cx='260' cy='0' r='205'/%3E%3Cpath d='M260 0 L0 260 M260 0 L90 260 M260 0 L175 260 M260 0 L260 260 M260 0 L0 175 M260 0 L0 90'/%3E%3C/g%3E%3C/svg%3E"),
+        radial-gradient(1000px 480px at 88% -5%, rgba(230,36,41,.12), transparent 60%),
+        radial-gradient(820px 520px at 4% 108%, rgba(43,92,230,.12), transparent 60%);
+    background-repeat: no-repeat;
+    background-position: top right;
 }
-/* hero ခေါင်းစဉ် — gradient စာသား + glow */
-.neon-hero { padding: 8px 0 4px 0; }
-.neon-title {
-    font-size: 2.1rem; font-weight: 800; line-height: 1.2;
-    background: linear-gradient(90deg, #F0ABFC, #C026D3 45%, #818CF8);
-    -webkit-background-clip: text; background-clip: text; color: transparent;
-    filter: drop-shadow(0 0 16px rgba(192,38,211,.45));
+
+/* --- hero --- */
+.spidey-hero { text-align: center; padding: 20px 0 4px; }
+.spidey-kicker { color: #8A93B8; font-size: .78rem; letter-spacing: 3px; font-weight: 700; }
+.spidey-title {
+    font-family: 'Bangers', 'Arial Black', sans-serif;
+    font-size: 3.2rem; letter-spacing: 3px; color: #F03A3A;
+    -webkit-text-stroke: 1.5px #5d0a0d;
+    text-shadow: 3px 3px 0 #1D4ED8, 7px 7px 0 rgba(0,0,0,.55), 0 0 34px rgba(230,36,41,.55);
+    transform: rotate(-1.5deg); margin: 2px 0;
 }
-.neon-sub { color: #C4B5FD; font-size: 1rem; margin-top: 4px; }
-/* အဆင့် ခေါင်းစဉ်တွေ (subheader) — ဘေးမှာ neon လိုင်း */
-h3 {
-    border-left: 4px solid #C026D3;
-    padding-left: 12px !important;
-    text-shadow: 0 0 14px rgba(192,38,211,.55);
+.spidey-sub { color: #B9C4E8; font-size: 1rem; margin-top: 8px; }
+@media (max-width: 640px){ .spidey-title{ font-size: 2.2rem; } }
+
+/* --- အဆင့်ခြေရာ (step tracker) --- */
+.spidey-steps { display: flex; gap: 8px; margin: 16px 0 6px; flex-wrap: wrap; }
+.spidey-step { flex: 1 1 0; min-width: 96px; text-align: center; padding: 9px 4px;
+    border-radius: 14px; font-size: .8rem; font-weight: 700;
+    background: rgba(255,255,255,.045); border: 1px solid rgba(255,255,255,.13); color: #9AA0BC; }
+.spidey-step .n { display: block; font-size: 1.1rem; margin-bottom: 2px; }
+.spidey-step.done { background: rgba(230,36,41,.16); border-color: rgba(230,36,41,.7); color: #FFB4B6; }
+.spidey-step.current { background: linear-gradient(135deg,#E62429,#9E1116); color: #fff;
+    border-color: #FF7A7A; box-shadow: 0 0 18px rgba(230,36,41,.65); }
+.spidey-step.skip { opacity: .4; }
+
+/* --- ကတ် --- */
+.spidey-card { background: rgba(18,18,36,.78); border: 1px solid rgba(230,36,41,.30);
+    border-radius: 18px; margin: 14px 0; overflow: hidden;
+    box-shadow: 0 8px 28px rgba(0,0,0,.5); }
+.spidey-card-head { display: flex; align-items: center; gap: 12px; padding: 11px 18px;
+    background: linear-gradient(90deg, rgba(230,36,41,.25), rgba(43,92,230,.14));
+    border-bottom: 1px solid rgba(230,36,41,.28); }
+.spidey-num { width: 34px; height: 34px; border-radius: 50%; flex-shrink: 0;
+    display: flex; align-items: center; justify-content: center;
+    background: linear-gradient(135deg,#F03A3A,#8f1013); color: #fff;
+    font-weight: 800; font-size: 1.05rem; box-shadow: 0 0 14px rgba(230,36,41,.8); }
+.spidey-card-title { font-size: 1.12rem; font-weight: 800; color: #fff; }
+.spidey-card-body { padding: 16px 18px 20px; }
+.spidey-card-body h3 { border-left: 4px solid #E62429; padding-left: 12px !important; }
+
+/* --- ခလုတ် --- */
+div[data-testid*="stBaseButton-primary"] > button, .stButton > button[kind="primary"] {
+    background: linear-gradient(135deg, #F03A3A, #A50F14) !important;
+    color: #fff !important; border: none !important; border-radius: 12px !important;
+    font-weight: 800 !important; letter-spacing: .3px;
+    box-shadow: 0 4px 20px rgba(230,36,41,.5) !important;
 }
-/* အဓိက ခလုတ် — gradient + glow */
-div[data-testid="stBaseButton-primary"] > button, .stButton > button[kind="primary"] {
-    background: linear-gradient(135deg, #A855F7, #EC4899) !important;
-    color: #fff !important; border: none !important; border-radius: 999px !important;
-    font-weight: 700 !important; box-shadow: 0 0 18px rgba(168,85,247,.5) !important;
+div[data-testid*="stBaseButton-primary"] > button:hover, .stButton > button[kind="primary"]:hover {
+    box-shadow: 0 6px 28px rgba(230,36,41,.85) !important;
+    transform: translateY(-1px); color: #fff !important;
 }
-div[data-testid="stBaseButton-primary"] > button:hover, .stButton > button[kind="primary"]:hover {
-    box-shadow: 0 0 30px rgba(168,85,247,.85) !important; transform: translateY(-1px);
-    color: #fff !important;
+.stButton > button[kind="secondary"], div[data-testid*="stBaseButton-secondary"] > button {
+    border: 1px solid rgba(80,120,255,.55) !important; border-radius: 12px !important;
+    background: rgba(43,92,230,.10) !important; color: #C9D6FF !important; font-weight: 700 !important;
 }
-/* သာမန် ခလုတ် — ခရမ်းဘောင် outline */
-.stButton > button[kind="secondary"], div[data-testid="stBaseButton-secondary"] > button {
-    border: 1px solid rgba(192,38,211,.6) !important; border-radius: 999px !important;
-    background: rgba(192,38,211,.08) !important; color: #E9D5FF !important; font-weight: 600 !important;
+.stButton > button[kind="secondary"]:hover, div[data-testid*="stBaseButton-secondary"] > button:hover {
+    background: rgba(43,92,230,.22) !important; color: #fff !important;
+    box-shadow: 0 0 16px rgba(43,92,230,.45) !important; border-color: #7FA2FF !important;
 }
-.stButton > button[kind="secondary"]:hover, div[data-testid="stBaseButton-secondary"] > button:hover {
-    background: rgba(192,38,211,.18) !important; box-shadow: 0 0 16px rgba(192,38,211,.4) !important;
-    color: #fff !important; border-color: #E879F9 !important;
-}
-/* sidebar — နက်ခရမ်း gradient + ဘေးလိုင်း */
+
+/* --- sidebar --- */
 section[data-testid="stSidebar"] {
-    background: linear-gradient(180deg, #150C28 0%, #0D0716 100%) !important;
-    border-right: 1px solid rgba(192,38,211,.28);
+    background: linear-gradient(180deg, #160709 0%, #0A0A14 70%) !important;
+    border-right: 1px solid rgba(230,36,41,.32);
 }
-/* expander ကတ် */
-div[data-testid="stExpander"] {
-    border: 1px solid rgba(168,85,247,.35); border-radius: 14px;
-    background: rgba(168,85,247,.05);
-}
-/* input / textarea / select */
-div[data-testid="stTextInput"] input, div[data-testid="stTextArea"] textarea,
-div[data-testid="stSelectbox"] div[data-baseweb="select"] > div {
-    border-radius: 12px !important;
-}
+section[data-testid="stSidebar"] h3 { border-left: 4px solid #E62429; padding-left: 10px !important; }
+section[data-testid="stSidebar"] h4 { color: #FF8A8D !important; }
+
+/* --- တခြား --- */
+div[data-testid="stExpander"] { border: 1px solid rgba(230,36,41,.32); border-radius: 14px;
+    background: rgba(230,36,41,.05); }
+div[data-testid="stFileUploader"] { border: 1.5px dashed rgba(230,36,41,.55); border-radius: 16px;
+    background: rgba(230,36,41,.05); padding: 10px; }
 div[data-testid="stTextInput"] input:focus, div[data-testid="stTextArea"] textarea:focus {
-    border-color: #C026D3 !important; box-shadow: 0 0 0 1px #C026D3, 0 0 14px rgba(192,38,211,.4) !important;
-}
-/* file uploader */
-div[data-testid="stFileUploader"] {
-    border: 1px dashed rgba(192,38,211,.5); border-radius: 16px;
-    background: rgba(192,38,211,.05); padding: 8px;
-}
-/* progress bar glow */
-div[data-testid="stProgress"] > div > div { box-shadow: 0 0 12px rgba(192,38,211,.7); }
-/* radio ရွေးစရာ စာသား */
-div[data-testid="stRadio"] label { color: #E9D5FF !important; }
+    border-color: #E62429 !important;
+    box-shadow: 0 0 0 1px #E62429, 0 0 14px rgba(230,36,41,.4) !important; }
+div[data-testid="stProgress"] > div > div { box-shadow: 0 0 12px rgba(230,36,41,.8); }
+.spidey-dl-label { font-weight: 800; color: #FFB4B6; margin: 6px 0 10px; font-size: 1rem; }
+.spidey-foot { text-align: center; color: #5A6080; font-size: .8rem; padding: 20px 0 8px; }
 </style>"""
+
+
+def _spidey_card_open(n, title):
+    import streamlit as st
+    st.markdown(
+        f'<div class="spidey-card"><div class="spidey-card-head">'
+        f'<span class="spidey-num">{n}</span>'
+        f'<span class="spidey-card-title">{title}</span></div>'
+        '<div class="spidey-card-body">',
+        unsafe_allow_html=True,
+    )
+
+
+def _spidey_card_close():
+    import streamlit as st
+    st.markdown("</div></div>", unsafe_allow_html=True)
+
+
+def _spidey_steps(S, is_video):
+    """အဆင့် ၆ ဆင့်ရဲ့ တိုးတက်မှုကို ပြတဲ့ tracker."""
+    import streamlit as st
+    labels = ["ဖိုင်တင်", "စာသားထုတ်", "ဘာသာပြန်", "စာစစ်", "အသံထုတ်", "Download"]
+    has_out = bool(
+        (S.out_mp4 and os.path.isfile(S.out_mp4))
+        or (S.out_mp3 and os.path.isfile(S.out_mp3))
+    )
+    done = [
+        bool(S.video_path) if is_video else bool(S.src_segments),
+        bool(S.src_segments),
+        bool(S.translations),
+        bool(S.final_segments),
+        bool(S.fitted),
+        has_out,
+    ]
+    skip = [False, not is_video, False, False, False, False]
+    cur = next((i for i in range(6) if not done[i] and not skip[i]), None)
+    parts = []
+    for i, lab in enumerate(labels):
+        if done[i]:
+            cls, icon = "done", "✅"
+        elif skip[i]:
+            cls, icon = "skip", "⏭️"
+        elif i == cur:
+            cls, icon = "current", "🔴"
+        else:
+            cls, icon = "todo", "⭕"
+        parts.append(
+            f'<div class="spidey-step {cls}"><span class="n">{icon}</span>{i + 1}. {lab}</div>'
+        )
+    st.markdown('<div class="spidey-steps">' + "".join(parts) + "</div>",
+                unsafe_allow_html=True)
+
 
 GROQ_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
 GROQ_MODEL = "whisper-large-v3-turbo"  # sub-translator မှာ အလုပ်ဖြစ်နေတဲ့ model
@@ -599,14 +674,16 @@ def _init_state(st):
 
 def main():
     import streamlit as st
-    st.set_page_config(page_title="Audio Dub Studio", page_icon="🎙️", layout="wide")
-    st.markdown(_NEON_CSS, unsafe_allow_html=True)
+    st.set_page_config(page_title="Audio Dub Studio", page_icon="🕷️", layout="wide")
+    st.markdown(_SPIDEY_CSS, unsafe_allow_html=True)
     _init_state(st)
     S = st.session_state
 
     # ---------------------------------------------------------- sidebar
     with st.sidebar:
-        st.header("⚙️ ဆက်တင်")
+        st.markdown("### 🕷️ Spidey Control")
+        st.caption("Key တွေ၊ အသံနဲ့ ရွေးချယ်စရာတွေ ဒီမှာပြင်")
+        st.markdown("#### 🔑 API Keys")
         localS = _local_storage(st)
         # key ဖျက်တာ — widget တွေ မပေါ်ခင် (run အစ) မှာ လုပ်
         if S.get("_clear_keys"):
@@ -657,9 +734,13 @@ def main():
                           "(ဥပမာ သူများဖုန်း/ကွန်ပျူတာနဲ့ သုံးပြီးရင်)"):
             S["_clear_keys"] = True
             st.rerun()
+        st.divider()
+        st.markdown("#### 🎚️ အသံ ဆက်တင်")
         model_id = st.text_input("Gemini model", value=GEMINI_MODEL_DEFAULT)
         max_speed = st.slider("အမြန်ဆုံးနှုန်း (အသံချုံ့တာ)", 1.0, 2.0, 1.3, 0.05,
                               help="စာရှည်ရင် ဒီနှုန်းအထိ မြန်ပေးမယ်")
+        st.divider()
+        st.markdown("#### ⚙️ ရွေးချယ်စရာ")
         auto_merge = st.checkbox("🔗 အပိုင်းသေးတွေ အလိုအလျောက်ပေါင်း", value=True,
                                  help="Whisper ပေးတဲ့ စက္ကန့်ပိုင်းအကွက်သေးလေးတွေကို "
                                       "ကပ်နေတဲ့အပိုင်းနဲ့ ပေါင်းမယ် — အသံအရမ်းမြန်ရတာသက်သာမယ်။ "
@@ -670,17 +751,19 @@ def main():
         voice = st.selectbox("အသံ", [VOICE_MALE, VOICE_FEMALE],
                              format_func=lambda v: "🗣️ ကျား (Thiha)" if v == VOICE_MALE else "🗣️ မ (Nilar)")
         st.divider()
-        if st.button("🗑️ အစက ပြန်စ"):
+        st.markdown("#### 🗑️ အသစ်")
+        if st.button("အစက ပြန်စ", use_container_width=True):
             for k in list(S.keys()):
                 del S[k]
             st.rerun()
 
     # ---------------------------------------------------------- main
     st.markdown(
-        '<div class="neon-hero">'
-        '<div class="neon-title">🎙️ Audio Dub Studio</div>'
-        '<div class="neon-sub">ဗီဒီယို ဒါမှမဟုတ် SRT ဖိုင်ကနေ မြန်မာအသံထွက်ပေးတယ် — '
-        "မူရင်းအချိန်အတိုင်း။</div></div>",
+        '<div class="spidey-hero">'
+        '<div class="spidey-kicker">🕸️ FRIENDLY NEIGHBORHOOD DUBBING 🕸️</div>'
+        '<div class="spidey-title">Audio Dub Studio</div>'
+        '<div class="spidey-sub">ဗီဒီယို / SRT → မြန်မာအသံ — မူရင်းအချိန်အတိုင်း 🕷️</div>'
+        "</div>",
         unsafe_allow_html=True,
     )
 
@@ -700,14 +783,20 @@ def main():
         st.rerun()
     S["_mode"] = mode
     is_video = (mode == "🎬 ဗီဒီယို")
+    _spidey_steps(S, is_video)
 
     # ---- အဆင့် ၁: upload (ဗီဒီယို / SRT)
+    _spidey_card_open(1, "ဗီဒီယိုတင်ပါ" if is_video else "SRT ဖိုင်တင်ပါ")
     if is_video:
-        st.subheader("၁။ ဗီဒီယိုတင်ပါ")
         up = st.file_uploader("MP4 / MOV / WEBM ဖိုင်ရွေးပါ", type=["mp4", "mov", "webm"])
         if S.video_path:
             st.info(f"📁 {os.path.basename(S.video_path)} — {S.duration:.1f} စက္ကန့်")
-        if up is not None and st.button("▶️ အသံထုတ်ယူရန်"):
+        _bc1, _ = st.columns([1, 2])
+        with _bc1:
+            _go1 = (st.button("▶️ အသံထုတ်ယူရန်", type="primary",
+                              use_container_width=True)
+                    if up is not None else False)
+        if _go1:
             run_id = uuid.uuid4().hex[:8]
             rd = os.path.join(WORK_DIR, run_id)
             os.makedirs(rd, exist_ok=True)
@@ -726,7 +815,6 @@ def main():
             st.success(f"✅ အသံထုတ်ပြီးပြီ — ဗီဒီယို {d:.1f} စက္ကန့်")
             st.rerun()
     else:
-        st.subheader("၁။ SRT ဖိုင်တင်ပါ")
         srt_up = st.file_uploader("SRT ဖိုင်ရွေးပါ", type=["srt"], key="srt_up")
         srt_lang_choice = st.radio(
             "SRT က ဘယ်ဘာသာစကားလဲ",
@@ -735,7 +823,12 @@ def main():
         is_my = srt_lang_choice.startswith("✅")
         if S.src_segments:
             st.info(f"📄 {S.srt_name} — အပိုင်း {len(S.src_segments)} ခု")
-        if srt_up is not None and st.button("▶️ SRT ဖတ်ရန်"):
+        _bc1s, _ = st.columns([1, 2])
+        with _bc1s:
+            _gos = (st.button("▶️ SRT ဖတ်ရန်", type="primary",
+                              use_container_width=True)
+                    if srt_up is not None else False)
+        if _gos:
             raw = srt_up.getbuffer()
             text = None
             for enc in ("utf-8-sig", "utf-16", "cp1252"):
@@ -764,9 +857,10 @@ def main():
                                    "text": s["text"], "src": ""} for s in segs]
             st.success(f"✅ SRT ဖတ်ပြီးပြီ — အပိုင်း {len(segs)} ခု")
             st.rerun()
+    _spidey_card_close()
 
     # ---- အဆင့် ၂: transcribe (ဗီဒီယိုမုဒ်သာ)
-    st.subheader("၂။ အသံမှ စာသားထုတ်")
+    _spidey_card_open(2, "အသံမှ စာသားထုတ်")
     if not is_video:
         st.info("📄 SRT ဖိုင်ကနေ တိုက်ရိုက်ရပြီးမို့ ဒီအဆင့်မလိုဘူး — အဆင့် ၃ ကို ဆက်သွားပါ။")
     elif not S.audio_path:
@@ -774,7 +868,11 @@ def main():
     elif not groq_key:
         st.warning("⚠️ Groq API Key ထည့်မှ စာသားထုတ်လို့ရမယ် (ဘယ်ဘက် sidebar)။")
     else:
-        if st.button("🎤 နားထောင်ပြီး စာသားထုတ်ရန်"):
+        _bc2, _ = st.columns([1, 2])
+        with _bc2:
+            _go2 = st.button("🎤 နားထောင်ပြီး စာသားထုတ်ရန်", type="primary",
+                             use_container_width=True)
+        if _go2:
             with st.status("Groq Whisper API နဲ့ နားထောင်နေတယ်...", expanded=True) as stt:
                 try:
                     data = transcribe_audio(S.audio_path, groq_key)
@@ -802,8 +900,10 @@ def main():
                 if len(S.src_segments) > 50:
                     st.caption(f"...နောက် {len(S.src_segments) - 50} ခု ကျန်သေးတယ်")
 
+    _spidey_card_close()
+
     # ---- အဆင့် ၃: translate
-    st.subheader("၃။ မြန်မာလို ဘာသာပြန်")
+    _spidey_card_open(3, "မြန်မာလို ဘာသာပြန်")
     if not S.src_segments:
         st.caption("အရင်ဆုံး အဆင့် ၁ မှာ " +
                    ("ဗီဒီယိုတင်" if is_video else "SRT ဖိုင်တင်") + "ပါ။")
@@ -817,7 +917,11 @@ def main():
     elif not api_key:
         st.warning("⚠️ Gemini API key ထည့်မှ ဘာသာပြန်လို့ရမယ် (ဘယ်ဘက် sidebar)။")
     else:
-        if st.button("🌐 သဘာဝကျတဲ့ ပြောစကားမြန်မာလို ပြန်ရန်"):
+        _bc3, _ = st.columns([1, 2])
+        with _bc3:
+            _go3 = st.button("🌐 သဘာဝကျတဲ့ ပြောစကားမြန်မာလို ပြန်ရန်",
+                             type="primary", use_container_width=True)
+        if _go3:
             prog = st.progress(0.0, "Gemini နဲ့ ဘာသာပြန်နေတယ်...")
             try:
                 result, failed = gemini_translate(
@@ -837,15 +941,21 @@ def main():
                     st.write(f"`{fmt_ts(s['start'])}` {s['text']}")
                     st.caption(f"မူရင်း: {s['src'][:80]}")
 
+    _spidey_card_close()
+
     # ---- အဆင့် ၄: review / edit
-    st.subheader("၄။ စာသားစစ် / ပြင်")
+    _spidey_card_open(4, "စာသားစစ် / ပြင်")
     if not S.translations:
         st.caption("အရင်ဆုံး အဆင့် ၃ မှာ ဘာသာပြန်ပါ။")
     else:
         raw = st.text_area(
             "တစ်ကြောင်းချင်း ပြင်လို့ရတယ် — အစဉ်မပြောင်းနဲ့၊ ပုံစံမဖျက်နဲ့",
             value=segments_to_review_text(S.translations), height=300)
-        if st.button("✔️ စစ်ပြီး ဆက်ရန်"):
+        _bc4, _ = st.columns([1, 2])
+        with _bc4:
+            _go4 = st.button("✔️ စစ်ပြီး ဆက်ရန်", type="primary",
+                             use_container_width=True)
+        if _go4:
             try:
                 S.final_segments = parse_review_text(raw)
                 S.fitted, S.out_mp4, S.out_mp3 = None, None, None
@@ -853,14 +963,20 @@ def main():
             except ValueError as e:
                 st.error(str(e))
 
+    _spidey_card_close()
+
     # ---- အဆင့် ၅: TTS + fit
-    st.subheader("၅။ မြန်မာအသံထုတ် + အချိန်ချိန်")
+    _spidey_card_open(5, "မြန်မာအသံထုတ် + အချိန်ချိန်")
     if not S.final_segments:
         st.caption("အရင်ဆုံး အဆင့် ၄ မှာ စာသားအတည်ပြုပါ။")
     else:
         st.caption("အသံတစ်ကြောင်းချင်းကို သူ့အချိန်ကွက်ထဲ အတိအကျထည့်မယ် — "
                    f"ရှည်ရင် {max_speed}x အထိ မြန်ပေးမယ်၊ နောက်အပိုင်းနဲ့ ဘယ်တော့မှ မထပ်စေဘူး။")
-        if st.button("🔊 အသံထုတ်ရန်"):
+        _bc5, _ = st.columns([1, 2])
+        with _bc5:
+            _go5 = st.button("🔊 အသံထုတ်ရန်", type="primary",
+                             use_container_width=True)
+        if _go5:
             work_segs = os.path.join(WORK_DIR, S.run_id, "segs")
             prog = st.progress(0.0)
             curlbl = st.empty()
@@ -915,16 +1031,20 @@ def main():
                 for i, s_, t_ in r["tts_failed"]:
                     st.write(f"#{i + 1} `{fmt_ts(s_)}`: {t_}")
 
+    _spidey_card_close()
+
     # ---- အဆင့် ၆: assemble + download
-    if is_video:
-        st.subheader("၆။ ဗီဒီယိုနဲ့ပေါင်း + Download")
-    else:
-        st.subheader("၆။ အသံဖိုင် Download")
+    _spidey_card_open(6, "ဗီဒီယိုနဲ့ပေါင်း + Download"
+                      if is_video else "အသံဖိုင် Download")
     if not S.fitted:
         st.caption("အရင်ဆုံး အဆင့် ၅ မှာ အသံထုတ်ပါ။")
     else:
         if is_video:
-            if st.button("🎬 မူရင်းဗီဒီယိုနဲ့ ပေါင်းရန်"):
+            _bc6, _ = st.columns([1, 2])
+            with _bc6:
+                _go6 = st.button("🎬 မူရင်းဗီဒီယိုနဲ့ ပေါင်းရန်", type="primary",
+                                 use_container_width=True)
+            if _go6:
                 work_asm = os.path.join(WORK_DIR, S.run_id, "asm")
                 dubbed = os.path.join(WORK_DIR, S.run_id, "dubbed_audio.mp3")
                 out = os.path.join(WORK_DIR, S.run_id, "dubbed_video.mp4")
@@ -934,7 +1054,11 @@ def main():
                 S.out_mp4 = out
                 st.success("✅ ပြီးပြီ! အောက်မှာ download ချလို့ရပြီ")
         else:
-            if st.button("🎧 အသံဖိုင်ထုတ်ရန်"):
+            _bc6s, _ = st.columns([1, 2])
+            with _bc6s:
+                _go6s = st.button("🎧 အသံဖိုင်ထုတ်ရန်", type="primary",
+                                  use_container_width=True)
+            if _go6s:
                 work_asm = os.path.join(WORK_DIR, S.run_id, "asm")
                 out = os.path.join(WORK_DIR, S.run_id, "dubbed_voiceover.mp3")
                 with st.status("အသံဆက်နေတယ်...", expanded=False):
@@ -954,18 +1078,32 @@ def main():
             _dl = re.sub(r'[\\/:*?"<>|]', "_", (S.get("dl_name") or "").strip())
             if not _dl:
                 _dl = "dubbed"
+        st.markdown('<div class="spidey-dl-label">📥 ရလာဒ်များ</div>',
+                    unsafe_allow_html=True)
+        _dc = st.columns(3)
+        _di = 0
         if S.out_mp4 and os.path.isfile(S.out_mp4):
-            with open(S.out_mp4, "rb") as f:
-                st.download_button("⬇️ Dubbed MP4 ရယူ", f,
-                                   file_name=f"{_dl}.mp4", mime="video/mp4")
+            with _dc[_di], open(S.out_mp4, "rb") as f:
+                st.download_button("⬇️ Dubbed MP4", f, file_name=f"{_dl}.mp4",
+                                   mime="video/mp4", type="primary",
+                                   use_container_width=True)
+            _di += 1
         if S.out_mp3 and os.path.isfile(S.out_mp3):
-            with open(S.out_mp3, "rb") as f:
-                st.download_button("⬇️ Dubbed MP3 ရယူ", f,
-                                   file_name=f"{_dl}.mp3", mime="audio/mpeg")
+            with _dc[_di], open(S.out_mp3, "rb") as f:
+                st.download_button("⬇️ Dubbed MP3", f, file_name=f"{_dl}.mp3",
+                                   mime="audio/mpeg", type="primary",
+                                   use_container_width=True)
+            _di += 1
         if S.final_segments:
-            st.download_button("⬇️ SRT ရယူ",
-                               segments_to_srt(S.final_segments),
-                               file_name=f"{_dl}.srt", mime="text/plain")
+            with _dc[_di]:
+                st.download_button("⬇️ SRT", segments_to_srt(S.final_segments),
+                                   file_name=f"{_dl}.srt", mime="text/plain",
+                                   use_container_width=True)
+    _spidey_card_close()
+    st.markdown(
+        '<div class="spidey-foot">🕷️ Audio Dub Studio — '
+        "your friendly neighborhood dubbing tool 🕸️</div>",
+        unsafe_allow_html=True)
 
 
 if __name__ == "__main__":
