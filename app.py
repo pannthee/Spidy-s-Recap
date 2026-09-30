@@ -20,6 +20,12 @@ Pipeline:
       → အသံပြန်ထုတ် (တစ်ကြိမ်သာ)
   6. ဗီဒီယိုအသစ်နဲ့ ပေါင်း → MP4 download + SRT download
 
+🎙️ Narrator mode (ဗီဒီယိုမုဒ်သာ):
+  3'. ffmpeg scene detection → scene တစ်ခုချင်း frame ထုတ် →
+     Gemini vision က scene ဖော်ပြချက် → Gemini က third-person မြန်မာ
+     narrator script ရေး (scene အလိုက်, အချိန်နဲ့ကိုက်အောင်) →
+     S.translations ထဲ ထည့် → အဆင့် ၄/၅/၆ အဟောင်းအတိုင်း ဆက်
+
 Run:  streamlit run app.py
 """
 import asyncio
@@ -166,10 +172,12 @@ def _spidey_card_close():
     ctx.__exit__(None, None, None)
 
 
-def _spidey_steps(S, is_video):
+def _spidey_steps(S, is_video, narr=False):
     """အဆင့် ၆ ဆင့်ရဲ့ တိုးတက်မှုကို ပြတဲ့ tracker."""
     import streamlit as st
-    labels = ["ဖိုင်တင်", "စာသားထုတ်", "ဘာသာပြန်", "စာစစ်", "အသံထုတ်", "Download"]
+    labels = ["ဖိုင်တင်", "စာသားထုတ်",
+              "Narrator" if narr else "ဘာသာပြန်",
+              "စာစစ်", "အသံထုတ်", "Download"]
     has_out = bool(
         (S.out_mp4 and os.path.isfile(S.out_mp4))
         or (S.out_mp3 and os.path.isfile(S.out_mp3))
@@ -478,6 +486,197 @@ def gemini_shorten(api_key, model_id, items, glossary=None):
             if t:
                 out[int(row["id"])] = t
     return out
+
+
+# ------------------------------------------------- 🎙️ narrator mode
+# စာကြောင်းချင်း ဘာသာပြန်တာအစား: scene ခွဲ → AI က scene ကြည့် →
+# third-person မြန်မာ narrator script ရေး → ကျန်တဲ့ pipeline (TTS/fit/mix)
+# ဒီအတိုင်း ပြန်သုံး.
+NARR_MAX_SCENES = 40      # vision token ကုန်သက်သာအောင် scene အများဆုံး
+NARR_MAX_SCENE_LEN = 45.0  # ဒီထက်ရှည်တဲ့ scene ကို ထပ်ခွဲ
+NARR_VISION_BATCH = 6     # vision API တစ်ခေါက်မှာ scene ဘယ်နှခုထည့်မလဲ
+NARR_CPS = 12.0           # narrator script အရှည်ချိန်ဖို့ (သဘာဝနှုန်း, conservative)
+
+_VISION_SYS = (
+    "You are analyzing video frames for a Myanmar recap narrator. "
+    "For each frame, describe in ONE concise English sentence: who or what is "
+    "visible, the action happening, and the mood or setting. Focus on "
+    "story-relevant visual information (characters, actions, key objects). "
+    "Return ONLY a JSON array of objects with keys 'id' and 'desc'."
+)
+
+_NARRATE_SYS = (
+    "You write Myanmar voiceover narration for video recap dubbing, in "
+    "THIRD-PERSON narrator style — like a recap channel explaining the story "
+    "clearly and simply so viewers understand easily. Use natural SPOKEN "
+    "Burmese (Myanmar), not formal written style. "
+    "For each scene, write narration that fits within max_chars (it must be "
+    "speakable within the scene's duration at natural speed). "
+    "Ground every line in the provided visual description and dialogue — "
+    "do NOT invent events, characters, or dialogue not supported by them. "
+    "Return ONLY a JSON array of objects with keys 'id' and 'text'."
+)
+
+
+def detect_scenes(video_path, threshold=0.35, max_scenes=NARR_MAX_SCENES,
+                  max_len=NARR_MAX_SCENE_LEN):
+    """ffmpeg scene detection → [{'start','end'}].
+
+    - ရှည်လွန်းတဲ့ scene (>max_len) ကို ထပ်ခွဲ
+    - သေးလွန်းတဲ့ အပိုင်းတွေကို ကပ်ရက်နဲ့ ပေါင်း (max_scenes ထိ)
+    """
+    r = subprocess.run(
+        ["ffmpeg", "-v", "info", "-i", video_path, "-vf",
+         f"select='gt(scene,{threshold})',showinfo", "-f", "null", "-"],
+        capture_output=True, text=True)
+    cuts = [0.0]
+    for line in r.stderr.splitlines():
+        m = re.search(r"pts_time:([\d.]+)", line)
+        if m:
+            t = float(m.group(1))
+            if t - cuts[-1] > 0.5:
+                cuts.append(t)
+    total = dur(video_path) or (cuts[-1] + 1.0)
+    cuts.append(total)
+    scenes = [{"start": cuts[i], "end": cuts[i + 1]}
+              for i in range(len(cuts) - 1) if cuts[i + 1] - cuts[i] > 0.3]
+    # ရှည်လွန်းတာ ခွဲ
+    split = []
+    for s in scenes:
+        L = s["end"] - s["start"]
+        n = max(1, int(round(L / max_len)))
+        for k in range(n):
+            split.append({"start": s["start"] + L * k / n,
+                          "end": s["start"] + L * (k + 1) / n})
+    # အများဆုံး max_scenes ထိ — အတိုဆုံး ကပ်ရက်နှစ်ခုကို ပေါင်း
+    while len(split) > max_scenes:
+        i = min(range(len(split) - 1),
+                key=lambda k: (split[k]["end"] - split[k]["start"]) +
+                              (split[k + 1]["end"] - split[k + 1]["start"]))
+        split[i]["end"] = split[i + 1]["end"]
+        del split[i + 1]
+    return split
+
+
+def extract_scene_frames(video_path, scenes, out_dir):
+    """scene တစ်ခုချင်း အလယ်ဖရိန် တစ်ပုံ (320px, jpg). → [path|None]."""
+    os.makedirs(out_dir, exist_ok=True)
+    paths = []
+    for i, s in enumerate(scenes):
+        mid = (s["start"] + s["end"]) / 2
+        p = os.path.join(out_dir, f"scene_{i:03d}.jpg")
+        try:
+            run(["ffmpeg", "-y", "-v", "error", "-ss", f"{mid:.2f}",
+                 "-i", video_path, "-frames:v", "1",
+                 "-vf", "scale=320:-1", "-q:v", "4", p])
+        except Exception:
+            pass
+        paths.append(p if os.path.isfile(p) else None)
+    return paths
+
+
+def _gemini_vision_call(api_key, model_id, system_text, items):
+    """items: [{'id', 'image_path'|None, 'label'}] → {id: desc}.
+
+    Vision ပျက်တဲ့ batch / scene ကို ကျော်မယ် (ပြန်မရတာ transcript-only
+    နဲ့ ဆက်လို့ရအောင်).
+    """
+    import requests  # local import
+    import base64
+    out = {}
+    for b in range(0, len(items), NARR_VISION_BATCH):
+        batch = items[b:b + NARR_VISION_BATCH]
+        parts = [{"text": system_text},
+                 {"text": "Frames:\n" + "\n".join(
+                     f"[{x['id']}] {x['label']}" for x in batch)}]
+        for x in batch:
+            if x["image_path"] and os.path.isfile(x["image_path"]):
+                with open(x["image_path"], "rb") as f:
+                    b64 = base64.b64encode(f.read()).decode("ascii")
+                parts.append({"text": f"Frame [{x['id']}]:"})
+                parts.append({"inline_data": {"mime_type": "image/jpeg",
+                                              "data": b64}})
+        body = {
+            "contents": [{"role": "user", "parts": parts}],
+            "generationConfig": {"responseMimeType": "application/json",
+                                 "temperature": 0.2, "maxOutputTokens": 4096},
+        }
+        try:
+            r = requests.post(
+                f"{GEMINI_BASE}{model_id}:generateContent",
+                headers={"Content-Type": "application/json",
+                         "x-goog-api-key": api_key},
+                json=body, timeout=180)
+            if r.status_code != 200:
+                continue
+            txt = r.json()["candidates"][0]["content"]["parts"][0]["text"]
+            txt = txt.strip()
+            if txt.startswith("```"):
+                txt = re.sub(r"^```(?:json)?\s*", "", txt)
+                txt = re.sub(r"\s*```$", "", txt)
+            for row in json.loads(txt):
+                if isinstance(row, dict) and "id" in row and "desc" in row:
+                    out[int(row["id"])] = str(row["desc"]).strip()
+        except Exception:
+            continue
+    return out
+
+
+def describe_scenes(api_key, model_id, video_path, scenes, work_dir,
+                    progress_cb=None):
+    """scene တွေကို frame ထုတ် → Gemini vision → [{'start','end','desc'}]."""
+    frames = extract_scene_frames(
+        video_path, scenes, os.path.join(work_dir, "frames"))
+    items = [{"id": i, "image_path": p,
+              "label": f"scene {fmt_ts(s['start'])}-{fmt_ts(s['end'])}"}
+             for i, (s, p) in enumerate(zip(scenes, frames))]
+    got = {}
+    total_batches = max(1, (len(items) + NARR_VISION_BATCH - 1) //
+                        NARR_VISION_BATCH)
+    for b in range(0, len(items), NARR_VISION_BATCH):
+        got.update(_gemini_vision_call(
+            api_key, model_id, _VISION_SYS, items[b:b + NARR_VISION_BATCH]))
+        if progress_cb:
+            progress_cb((b // NARR_VISION_BATCH + 1) / total_batches)
+    return [{"start": s["start"], "end": s["end"],
+             "desc": got.get(i, "")} for i, s in enumerate(scenes)]
+
+
+def gemini_narrate(api_key, model_id, scenes_with_desc, src_segments,
+                   glossary=None, progress_cb=None):
+    """scene တစ်ခုချင်းအတွက် third-person မြန်မာ narrator script.
+
+    → [{'start','end','text','src'}] — 'src' ထဲမှာ scene ဖော်ပြချက်
+    (အဆင့် ၄ review မှာ ကြည့်လို့ရအောင်). text လွတ်လာတဲ့ scene လည်း
+    ပါတယ် (အဆင့် ၄ မှာ ကိုယ်တိုင်ဖြည့် / problem finder က ထောက်မယ်).
+    """
+    items = []
+    for i, s in enumerate(scenes_with_desc):
+        L = s["end"] - s["start"]
+        dlg = " ".join(x["text"] for x in src_segments
+                       if x["start"] < s["end"] and x["end"] > s["start"])
+        items.append({"id": i, "duration": round(L, 1),
+                      "max_chars": max(8, int(L * NARR_CPS)),
+                      "visual": (s["desc"] or "")[:300],
+                      "dialogue": dlg[:600]})
+    out = {}
+    _sys = _NARRATE_SYS + _glossary_prompt(glossary)
+    BATCH = 10
+    batches = [items[i:i + BATCH] for i in range(0, len(items), BATCH)]
+    for b, batch in enumerate(batches):
+        try:
+            res = _gemini_call(api_key, model_id, _sys,
+                               json.dumps(batch, ensure_ascii=False))
+            for row in res:
+                if isinstance(row, dict) and "id" in row and "text" in row:
+                    out[int(row["id"])] = str(row["text"]).strip()
+        except Exception:
+            pass
+        if progress_cb:
+            progress_cb((b + 1) / len(batches))
+    return [{"start": s["start"], "end": s["end"],
+             "text": out.get(i, ""), "src": s["desc"]}
+            for i, s in enumerate(scenes_with_desc)]
 
 
 # ----------------------------- browser localStorage (key မပျောက်ဖို့)
@@ -813,6 +1012,7 @@ def _init_state(st):
         "fitted": None, "fit_report": None, "out_mp4": None, "out_mp3": None,
         "lang": "", "auto_shortened": False,
         "srt_name": "", "srt_is_my": False, "dl_base": "",
+        "scenes": None, "scene_descs": None,
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -959,7 +1159,7 @@ def main():
                   "src_segments", "translations", "final_segments",
                   "fitted", "fit_report", "out_mp4", "out_mp3", "lang",
                   "auto_shortened", "srt_name", "srt_is_my", "dl_base",
-                  "dl_name", "_dl_for"):
+                  "dl_name", "_dl_for", "scenes", "scene_descs"):
             if k in S:
                 del S[k]
         _reset_review_keys(S)
@@ -967,7 +1167,30 @@ def main():
         st.rerun()
     S["_mode"] = mode
     is_video = (mode == "🎬 ဗီဒီယို")
-    _spidey_steps(S, is_video)
+
+    # 🎙️ dub ပုံစံ: စာကြောင်းချင်းပြန် (အဟောင်း) / narrator ပြန်ပြော (အသစ်)
+    # ဗီဒီယိုမုဒ်အတွက်သာ — narrator က frame တွေ လိုလို့
+    narr = False
+    if is_video:
+        narr_choice = st.radio(
+            "🎙️ Dub ပုံစံ",
+            ["📝 စာကြောင်းချင်းပြန်", "🎙️ Narrator ပြန်ပြော"],
+            horizontal=True, key="narr_mode_radio",
+            help="စာကြောင်းချင်းပြန် = မူရင်းစကားအတိုင်း တစ်ကြောင်းချင်း မြန်မာလို; "
+                 "Narrator ပြန်ပြော = AI က scene တွေကြည့်ပြီး third-person "
+                 "နားလည်လွယ်အောင် ဇာတ်လမ်းပြန်ပြောတာ")
+        if S.get("_narr_mode") is not None and S["_narr_mode"] != narr_choice:
+            for k in ("scenes", "scene_descs", "translations",
+                      "final_segments", "fitted", "fit_report",
+                      "out_mp4", "out_mp3"):
+                if k in S:
+                    del S[k]
+            _reset_review_keys(S)
+            S["_narr_mode"] = narr_choice
+            st.rerun()
+        S["_narr_mode"] = narr_choice
+        narr = narr_choice.startswith("🎙️")
+    _spidey_steps(S, is_video, narr)
 
     # ---- အဆင့် ၁: upload (ဗီဒီယို / SRT)
     _spidey_card_open(1, "ဗီဒီယိုတင်ပါ" if is_video else "SRT ဖိုင်တင်ပါ")
@@ -1095,47 +1318,142 @@ def main():
 
     _spidey_card_close()
 
-    # ---- အဆင့် ၃: translate
-    _spidey_card_open(3, "မြန်မာလို ဘာသာပြန်")
-    if not S.src_segments:
-        st.caption("အရင်ဆုံး အဆင့် ၁ မှာ " +
-                   ("ဗီဒီယိုတင်" if is_video else "SRT ဖိုင်တင်") + "ပါ။")
-    elif S.get("srt_is_my"):
-        st.info("✅ SRT က မြန်မာလိုအဆင်သင့်မို့ ဘာသာပြန်စရာမလိုဘူး — "
-                "အဆင့် ၄ ကို ဆက်သွားပါ။")
-        if S.translations:
-            with st.expander("SRT စာသား ကြည့်"):
-                for s in S.translations[:30]:
-                    st.write(f"`{fmt_ts(s['start'])}` {s['text']}")
-    elif not api_key:
-        st.warning("⚠️ Gemini API key ထည့်မှ ဘာသာပြန်လို့ရမယ် (ဘယ်ဘက် sidebar)။")
+    # ---- အဆင့် ၃: translate / narrator script
+    _spidey_card_open(3, "🎙️ Narrator script ရေး" if narr else "မြန်မာလို ဘာသာပြန်")
+    if narr:
+        # 🎙️ narrator mode: scene ခွဲ → AI ကြည့် → script ရေး →
+        # ရလာတဲ့ script က S.translations ထဲ {start,end,text,src} ပုံစံနဲ့ ဝင်မယ် —
+        # အဆင့် ၄/၅/၆ က အဟောင်းအတိုင်း ဒီအတိုင်း ဆက်သုံးလို့ရတယ်
+        if not S.video_path:
+            st.caption("အရင်ဆုံး အဆင့် ၁ မှာ ဗီဒီယိုတင်ပါ။")
+        elif not S.src_segments:
+            st.caption("အရင်ဆုံး အဆင့် ၂ မှာ အသံမှ စာသားထုတ်ပါ "
+                       "(dialogue context အတွက် လိုတယ်)။")
+        elif not api_key:
+            st.warning("⚠️ Gemini API key ထည့်မှ narrator script ရေးလို့ရမယ် "
+                       "(ဘယ်ဘက် sidebar)။")
+        else:
+            _mid = model_id.strip() or GEMINI_MODEL_DEFAULT
+            st.caption("Scene ခွဲ → AI က scene တွေကြည့် → "
+                       "third-person မြန်မာ narrator script ရေး")
+            _bc3a, _ = st.columns([1, 2])
+            with _bc3a:
+                _go3a = st.button("🎬 ① Scene ခွဲရန်", type="primary",
+                                 use_container_width=True)
+            if _go3a:
+                with st.spinner("Scene ဖြတ်တဲ့နေရာတွေ ရှာနေတယ်..."):
+                    S.scenes = detect_scenes(S.video_path)
+                S.scene_descs, S.translations = None, None
+                S.final_segments, S.fitted = None, None
+                _reset_review_keys(S)
+                st.success(f"✅ Scene {len(S.scenes)} ခု တွေ့တယ်")
+                st.rerun()
+            if S.scenes:
+                _longest = max(s["end"] - s["start"] for s in S.scenes)
+                st.caption(f"🎬 Scene {len(S.scenes)} ခု — "
+                           f"အရှည်ဆုံး {_longest:.1f} စက္ကန့်")
+                _bc3b, _ = st.columns([1, 2])
+                with _bc3b:
+                    _go3b = st.button("👁️ ② AI က scene တွေကြည့်ရန်",
+                                     type="primary", use_container_width=True)
+                if _go3b:
+                    prog = st.progress(0.0, "AI က scene တွေကို ကြည့်နေတယ်...")
+                    try:
+                        S.scene_descs = describe_scenes(
+                            api_key, _mid, S.video_path, S.scenes,
+                            os.path.join(WORK_DIR, S.run_id, "narr"),
+                            progress_cb=lambda f: prog.progress(f))
+                    except Exception as e:
+                        prog.empty()
+                        st.error(f"Vision ပျက်သွားတယ်: {e}")
+                        st.stop()
+                    prog.empty()
+                    _nd = sum(1 for d in S.scene_descs if d["desc"])
+                    if _nd == 0:
+                        st.warning("⚠️ AI က scene တွေ မမြင်ရဘူး — "
+                                   "transcript-only နဲ့ ဆက်မယ်")
+                    else:
+                        st.success(f"✅ {_nd}/{len(S.scene_descs)} scene "
+                                   "မြင်ပြီးပြီ")
+                    st.rerun()
+            if S.scene_descs:
+                with st.expander(
+                        f"👁️ Scene ဖော်ပြချက် {len(S.scene_descs)} ခု ကြည့်"):
+                    for d in S.scene_descs[:20]:
+                        st.write(f"`{fmt_ts(d['start'])} → {fmt_ts(d['end'])}` "
+                                 f"{d['desc'] or '—'}")
+                    if len(S.scene_descs) > 20:
+                        st.caption(f"...နောက် {len(S.scene_descs) - 20} ခု "
+                                   "ကျန်သေးတယ်")
+                _bc3c, _ = st.columns([1, 2])
+                with _bc3c:
+                    _go3c = st.button("🎙️ ③ Narrator script ရေးရန်",
+                                     type="primary", use_container_width=True)
+                if _go3c:
+                    prog = st.progress(0.0, "Narrator script ရေးနေတယ်...")
+                    try:
+                        S.translations = gemini_narrate(
+                            api_key, _mid, S.scene_descs, S.src_segments,
+                            glossary=glossary,
+                            progress_cb=lambda f: prog.progress(f))
+                    except Exception as e:
+                        prog.empty()
+                        st.error(f"Script ရေးတာ ပျက်သွားတယ်: {e}")
+                        st.stop()
+                    S.final_segments, S.fitted = None, None
+                    _reset_review_keys(S)
+                    prog.empty()
+                    st.success(f"✅ {len(S.translations)} scene အတွက် script "
+                               "ရပြီးပြီ — အဆင့် ၄ မှာ စစ်ပါ")
+                    st.rerun()
+            if S.translations:
+                with st.expander("🎙️ Narrator script ကြည့်"):
+                    for s in S.translations[:20]:
+                        st.write(f"`{fmt_ts(s['start'])}` {s['text']}")
+                    if len(S.translations) > 20:
+                        st.caption(f"...နောက် {len(S.translations) - 20} ခု "
+                                   "ကျန်သေးတယ်")
+        _spidey_card_close()
     else:
-        _bc3, _ = st.columns([1, 2])
-        with _bc3:
-            _go3 = st.button("🌐 သဘာဝကျတဲ့ ပြောစကားမြန်မာလို ပြန်ရန်",
-                             type="primary", use_container_width=True)
-        if _go3:
-            prog = st.progress(0.0, "Gemini နဲ့ ဘာသာပြန်နေတယ်...")
-            try:
-                result, failed = gemini_translate(
-                    api_key, S.src_segments, model_id.strip() or GEMINI_MODEL_DEFAULT,
-                    progress_cb=lambda f: prog.progress(f), glossary=glossary)
-            except Exception as e:
-                st.error(f"ဘာသာပြန်တာ ပျက်သွားတယ်: {e}")
-                st.stop()
-            S.translations, S.final_segments, S.fitted = result, None, None
-            _reset_review_keys(S)
-            prog.empty()
-            if failed:
-                st.warning(f"⚠️ {len(failed)} ပိုင်း ပြန်မရလို့ မူရင်းစာသားအတိုင်း ထားထားတယ်")
-            st.success(f"✅ {len(result)} ပိုင်း ဘာသာပြန်ပြီးပြီ")
-        if S.translations:
-            with st.expander("ဘာသာပြန်ချက် ကြည့်"):
-                for s in S.translations[:30]:
-                    st.write(f"`{fmt_ts(s['start'])}` {s['text']}")
-                    st.caption(f"မူရင်း: {s['src'][:80]}")
+        if not S.src_segments:
+            st.caption("အရင်ဆုံး အဆင့် ၁ မှာ " +
+                       ("ဗီဒီယိုတင်" if is_video else "SRT ဖိုင်တင်") + "ပါ။")
+        elif S.get("srt_is_my"):
+            st.info("✅ SRT က မြန်မာလိုအဆင်သင့်မို့ ဘာသာပြန်စရာမလိုဘူး — "
+                    "အဆင့် ၄ ကို ဆက်သွားပါ။")
+            if S.translations:
+                with st.expander("SRT စာသား ကြည့်"):
+                    for s in S.translations[:30]:
+                        st.write(f"`{fmt_ts(s['start'])}` {s['text']}")
+        elif not api_key:
+            st.warning("⚠️ Gemini API key ထည့်မှ ဘာသာပြန်လို့ရမယ် (ဘယ်ဘက် sidebar)။")
+        else:
+            _bc3, _ = st.columns([1, 2])
+            with _bc3:
+                _go3 = st.button("🌐 သဘာဝကျတဲ့ ပြောစကားမြန်မာလို ပြန်ရန်",
+                                 type="primary", use_container_width=True)
+            if _go3:
+                prog = st.progress(0.0, "Gemini နဲ့ ဘာသာပြန်နေတယ်...")
+                try:
+                    result, failed = gemini_translate(
+                        api_key, S.src_segments, model_id.strip() or GEMINI_MODEL_DEFAULT,
+                        progress_cb=lambda f: prog.progress(f), glossary=glossary)
+                except Exception as e:
+                    st.error(f"ဘာသာပြန်တာ ပျက်သွားတယ်: {e}")
+                    st.stop()
+                S.translations, S.final_segments, S.fitted = result, None, None
+                _reset_review_keys(S)
+                prog.empty()
+                if failed:
+                    st.warning(f"⚠️ {len(failed)} ပိုင်း ပြန်မရလို့ မူရင်းစာသားအတိုင်း ထားထားတယ်")
+                st.success(f"✅ {len(result)} ပိုင်း ဘာသာပြန်ပြီးပြီ")
+            if S.translations:
+                with st.expander("ဘာသာပြန်ချက် ကြည့်"):
+                    for s in S.translations[:30]:
+                        st.write(f"`{fmt_ts(s['start'])}` {s['text']}")
+                        st.caption(f"မူရင်း: {s['src'][:80]}")
 
-    _spidey_card_close()
+        _spidey_card_close()
 
     # ---- အဆင့် ၄: review / edit
     _spidey_card_open(4, "စာသားစစ် / ပြင်")
