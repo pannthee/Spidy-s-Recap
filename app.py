@@ -201,6 +201,8 @@ div[data-testid="stHorizontalBlock"]:has(> :nth-child(6):last-child) button {
 }
 /* wizard bottom nav: ခလုတ် ၂ ခု ဘေးချင်းကပ် (marker က ပထမကော်လံထဲ) */
 .wiz-bnav-col { display: none; }
+/* marker ပါတဲ့ markdown အခွံကို layout ကနေ လုံးဝဖယ် — မဟုတ်ရင် ဘယ်ခလုတ် ရွေ့ကျတယ် */
+div[data-testid="stVerticalBlock"] > div:has(.wiz-bnav-col) { display: none; }
 div[data-testid="stHorizontalBlock"]:has(.wiz-bnav-col) {
     flex-wrap: nowrap !important;
     gap: 0.5rem !important;
