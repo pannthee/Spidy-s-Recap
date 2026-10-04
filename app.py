@@ -184,6 +184,19 @@ def _spidey_card_close():
 def _spidey_steps(S, is_video, narr=False):
     """Wizard nav — horizontal stepper (number + status icon), နှိပ်ပြီး ကူးလို့ရ."""
     import streamlit as st
+    # ဖုန်း narrow screen မှာ Streamlit က columns တွေကို vertical ပြိုချပစ်တယ် —
+    # ၆ ကောလံ stepper ကို တစ်တန်းတည်း ဘေးတိုက်ထိန်းဖို့ CSS
+    st.markdown(
+        """<style>
+div[data-testid="stHorizontalBlock"]:has(> :nth-child(6):last-child) {
+    flex-wrap: nowrap !important;
+}
+div[data-testid="stHorizontalBlock"]:has(> :nth-child(6):last-child) > div {
+    min-width: 0 !important;
+}
+</style>""",
+        unsafe_allow_html=True,
+    )
     has_out = bool(
         (S.out_mp4 and os.path.isfile(S.out_mp4))
         or (S.out_mp3 and os.path.isfile(S.out_mp3))
