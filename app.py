@@ -182,11 +182,8 @@ def _spidey_card_close():
 
 
 def _spidey_steps(S, is_video, narr=False):
-    """Wizard nav — အဆင့် ၆ ခု, နှိပ်ပြီး ကူးလို့ရ (ဖုန်းမှာ ၂ တန်း x ၃ ကောလံ)."""
+    """Wizard nav — horizontal stepper (number + status icon), နှိပ်ပြီး ကူးလို့ရ."""
     import streamlit as st
-    labels = ["ဖိုင်တင်", "စာသားထုတ်",
-              "Narrator" if narr else "ဘာသာပြန်",
-              "စာစစ်", "အသံထုတ်", "Download"]
     has_out = bool(
         (S.out_mp4 and os.path.isfile(S.out_mp4))
         or (S.out_mp3 and os.path.isfile(S.out_mp3))
@@ -201,20 +198,18 @@ def _spidey_steps(S, is_video, narr=False):
     ]
     cur = max(1, min(6, int(S.get("wizard_step", 1))))
     S["wizard_step"] = cur  # clamp
-    for row in range(2):
-        cols = st.columns(3)
-        for c in range(3):
-            k = row * 3 + c
-            icon = ("✅" if done[k] else
-                    "⏭️" if k == 1 and not is_video else
-                    "🔴" if k + 1 == cur else "⭕")
-            with cols[c]:
-                if st.button(f"{k + 1}. {labels[k]} {icon}", key=f"wiz_nav_{k}",
-                             type="primary" if k + 1 == cur else "secondary",
-                             use_container_width=True,
-                             disabled=(k + 1 == cur)):
-                    S["wizard_step"] = k + 1
-                    st.rerun()
+    cols = st.columns(6)
+    for i, col in enumerate(cols):
+        icon = ("✅" if done[i] else
+                "⏭️" if i == 1 and not is_video else
+                "🔴" if i + 1 == cur else "⭕")
+        with col:
+            if st.button(f"{i + 1} {icon}", key=f"wiz_nav_{i}",
+                         type="primary" if i + 1 == cur else "secondary",
+                         use_container_width=True,
+                         disabled=(i + 1 == cur)):
+                S["wizard_step"] = i + 1
+                st.rerun()
 
 GROQ_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
 GROQ_MODEL = "whisper-large-v3-turbo"  # sub-translator မှာ အလုပ်ဖြစ်နေတဲ့ model
