@@ -80,8 +80,14 @@ Sidebar ရဲ့ "⚙️ ရွေးချယ်စရာ" အောက်မ�
   (ဥပမာ `#3 x0.67` = အပိုင်း ၃ ကို 1.5x မြန်ထားတယ်)။
   → TikTok/YouTube recap video တန်းတင်လို့ရတဲ့ MP4 ရတယ်။
 - **🔥 Subtitle burn-in** — မြန်မာစာတန်းထိုးကို video ထဲ တိုက်ရိုက်ထည့်တယ်
-  (Noto Sans Myanmar, အဖြူ+အနက်ဘောင်, 1080p စတိုင်)။ SRT သက်သက်လည်း ရတယ်။
+  (Noto Sans Myanmar, အဖြူ+အနက်ဘောင်, 1080p စတိုင်)။ Font ကို repo ထဲမှာ
+  ထည့်ထားတယ် (`fonts/NotoSansMyanmar-Regular.ttf`) — Streamlit Cloud လို
+  system font မရှိတဲ့နေရာမှာလည်း လေးထောင့်ကွက်မဖြစ်ဘူး။ SRT သက်သက်လည်း ရတယ်။
   Recap render နဲ့တွဲသုံးရင် timeline အသစ်နဲ့ကိုက်တဲ့ SRT ရမယ်။
+- **⚡ Render ပြီးရင် speed တင်** (slider 1.0–1.5) — download မချခင် video ကို
+  အမြန်ပေးတယ် (video+audio အတူ, sync မပျက်)။ Recap render နှေးနေရင်
+  1.1–1.3 လောက်တင်လို့ရတယ်။ စာတန်းထိုးနဲ့ SRT timestamp တွေလည်း
+  အလိုအလျောက်လိုက်ချိန်ပေးတယ်။ 1.0 = မူရင်းအတိုင်း။
 
 သုံးနည်း: toggle တွေဖွင့် → အဆင့် ၁–၄ အတိုင်းလုပ် → အဆင့် ၆ မှာ
 "🎞️ Recap render" နှိပ် → Dubbed MP4 download ချ။

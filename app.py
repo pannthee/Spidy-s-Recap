@@ -1164,7 +1164,16 @@ def render_recap_video(video_path, natural, total_duration, work_dir, out_mp4):
 
 
 def _find_myanmar_font():
-    """Noto Sans Myanmar font file ရှာ → path (မတွေ့ရင် None)."""
+    """Noto Sans Myanmar font file ရှာ → path (မတွေ့ရင် None).
+
+    အစဉ်လိုက်: 1) repo ထဲက bundled font (fonts/NotoSansMyanmar-Regular.ttf) —
+    Streamlit Cloud မှာ system Myanmar font မရှိလို့ burn-in က tofu
+    (လေးထောင့်ကွက်) ဖြစ်တာ ဒီနည်းနဲ့ ဖြေရှင်းတယ်.
+    2) system font (fc-match).
+    """
+    bundled = os.path.join(APP_DIR, "fonts", "NotoSansMyanmar-Regular.ttf")
+    if os.path.isfile(bundled):
+        return bundled
     try:
         r = subprocess.run(["fc-match", "Noto Sans Myanmar", "--format=%{file}"],
                            capture_output=True, text=True, timeout=10)
@@ -1227,16 +1236,35 @@ def segments_to_ass(segments, font_name="Noto Sans Myanmar", font_size=56):
 
 def burn_subtitles(video_in, ass_path, out_mp4):
     """ASS စာတန်းထိုးကို video ထဲ burn-in လုပ် (libass). Audio က copy."""
+    _fp = _find_myanmar_font()
+    if not _fp:
+        raise RuntimeError("မြန်မာ font မတွေ့ဘူး — burn-in လုပ်လို့မရဘူး")
     vf = "subtitles='" + ass_path.replace("\\", "/").replace(
         ":", "\\:").replace("'", "\\'").replace(",", "\\,") + "'"
-    _fp = _find_myanmar_font()
-    if _fp:
-        fd = os.path.dirname(_fp).replace("\\", "/").replace(
-            ":", "\\:").replace("'", "\\'")
-        vf += f":fontsdir='{fd}'"
+    fd = os.path.dirname(_fp).replace("\\", "/").replace(
+        ":", "\\:").replace("'", "\\'")
+    vf += f":fontsdir='{fd}'"
     run(["ffmpeg", "-y", "-v", "error", "-i", video_in,
          "-vf", vf, "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
          "-c:a", "copy", "-movflags", "+faststart", out_mp4])
+    return out_mp4
+
+
+def speedup_video(video_in, factor, out_mp4):
+    """Render ပြီးသား video ကို factor အတိုင်း အမြန်ပေး (video+audio အတူ, sync မပျက်).
+
+    factor=1.0 ဆို မူရင်းအတိုင်း copy. atempa က 0.5–2.0 အတွင်းမို့
+    slider ကို 1.0–1.5 ပဲ ပေးထားတယ်.
+    """
+    if abs(factor - 1.0) < 1e-6:
+        shutil.copyfile(video_in, out_mp4)
+        return out_mp4
+    run(["ffmpeg", "-y", "-v", "error", "-i", video_in,
+         "-vf", f"setpts=PTS/{factor:.4f}",
+         "-af", f"atempo={factor:.4f}",
+         "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
+         "-c:a", "aac", "-b:a", "128k",
+         "-movflags", "+faststart", out_mp4])
     return out_mp4
 
 
@@ -1359,6 +1387,7 @@ def _init_state(st):
         "srt_name": "", "srt_is_my": False, "dl_base": "",
         "scenes": None, "scene_descs": None,
         "recap_timeline": None, "recap_report": None,
+        "out_subs": None,
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -1503,6 +1532,10 @@ def main():
             help="မြန်မာစာတန်းထိုးကို video ထဲ တိုက်ရိုက်ထည့်မယ် "
                  "(Noto Sans Myanmar, အဖြူ+အနက်ဘောင်)။ SRT သက်သက်လည်း ရမယ်။ "
                  "ပိတ်ထားရင် အရင်အတိုင်း")
+        speedup = st.slider("⚡ Render ပြီးရင် speed တင်", 1.0, 1.5, 1.0, 0.05,
+                            help="Download မချခင် video ကို အမြန်ပေးမယ် "
+                                 "(video+audio အတူ, sync မပျက်) — 1.0 = မူရင်းအတိုင်း, "
+                                 "1.2 = 20% မြန်။ Recap render နှေးနေရင် ဒီမှာ တင်လို့ရတယ်")
         st.markdown("##### 📖 နာမည်စာရင်း (Glossary)")
         glossary_raw = st.text_area(
             "ဇာတ်ကောင်နာမည်တွေ — တစ်ကြောင်းတစ်ခု",
@@ -1896,7 +1929,7 @@ def main():
             try:
                 S.final_segments = parse_review_text(raw)
                 S.fitted, S.out_mp4, S.out_mp3 = None, None, None
-                S.recap_timeline, S.recap_report = None, None
+                S.recap_timeline, S.recap_report, S.out_subs = None, None, None
                 st.success(f"✅ {len(S.final_segments)} ပိုင်း အတည်ပြုပြီးပြီ")
             except ValueError as e:
                 st.error(str(e))
@@ -1948,7 +1981,7 @@ def main():
                     st.info(f"✂️ Gemini က {applied} လိုင်း တိုအောင်ပြင်ပြီးပြီ — "
                             "အသံပြန်ထုတ်ထားတယ်")
             S.fitted, S.fit_report, S.out_mp4, S.out_mp3 = fitted, report, None, None
-            S.recap_timeline, S.recap_report = None, None
+            S.recap_timeline, S.recap_report, S.out_subs = None, None, None
             prog.empty(); curlbl.empty()
             st.success(f"✅ အပိုင်း {len(fitted)} ပိုင်း အသံထွက်ပြီးပြီ")
         if S.fit_report:
@@ -2007,13 +2040,8 @@ def main():
                         _tmp_out = os.path.join(work_rc, "recap_video.mp4")
                         _, S.recap_timeline, S.recap_report = render_recap_video(
                             S.video_path, natural, S.duration, work_rc, _tmp_out)
-                        if burn_subs:
-                            _ass_p = os.path.join(work_rc, "recap_subs.ass")
-                            with open(_ass_p, "w", encoding="utf-8") as _fh:
-                                _fh.write(segments_to_ass(S.recap_timeline))
-                            burn_subtitles(_tmp_out, _ass_p, out)
-                        else:
-                            shutil.copyfile(_tmp_out, out)
+                        _stage = _tmp_out
+                        _subs = [dict(s) for s in S.recap_timeline]
                         _extreme = [(i, f) for (i, f, _n) in (S.recap_report or [])
                                     if f < 0.5 or f > 2.0]
                         if _extreme:
@@ -2025,14 +2053,26 @@ def main():
                         assemble_dubbed(S.fitted, S.duration, work_asm, dubbed)
                         _final_audio = dubbed
                         mux_video(S.video_path, _final_audio, out)
-                        S.recap_timeline, S.recap_report = None, None
-                        if burn_subs and S.video_path:
-                            _ass_p = os.path.join(work_asm, "dub_subs.ass")
-                            with open(_ass_p, "w", encoding="utf-8") as _fh:
-                                _fh.write(segments_to_ass(S.final_segments))
-                            _tmp = os.path.join(work_asm, "dubbed_video_tmp.mp4")
-                            os.replace(out, _tmp)
-                            burn_subtitles(_tmp, _ass_p, out)
+                        S.recap_timeline, S.recap_report, S.out_subs = None, None, None
+                        _stage = out
+                        _subs = [dict(s) for s in S.final_segments]
+                    # ⚡ speed-up (download မချခင် — video+audio အတူ, sync မပျက်)
+                    if speedup > 1.0:
+                        _spd = os.path.join(WORK_DIR, S.run_id, "spedup.mp4")
+                        speedup_video(_stage, speedup, _spd)
+                        _stage = _spd
+                        _subs = [{"start": s["start"] / speedup,
+                                  "end": s["end"] / speedup,
+                                  "text": s["text"]} for s in _subs]
+                    # 🔥 burn-in (speedup ပြီးမှ — timing ကိုက်အောင်)
+                    if burn_subs:
+                        _ass_p = os.path.join(WORK_DIR, S.run_id, "burn_subs.ass")
+                        with open(_ass_p, "w", encoding="utf-8") as _fh:
+                            _fh.write(segments_to_ass(_subs))
+                        burn_subtitles(_stage, _ass_p, out)
+                    elif _stage != out:
+                        shutil.copyfile(_stage, out)
+                    S.out_subs = _subs
                 S.out_mp4 = out
                 st.success("✅ ပြီးပြီ! အောက်မှာ download ချလို့ရပြီ")
         else:
@@ -2078,8 +2118,8 @@ def main():
             _di += 1
         if S.final_segments:
             with _dc[_di]:
-                # recap render လုပ်ထားရင် timeline အသစ်နဲ့ကိုက်တဲ့ SRT ပေး
-                _srt_segs = S.recap_timeline or S.final_segments
+                # render/burn မှာ သုံးတဲ့ timeline အတိုင်း (speedup ပါရင် ချိန်ပြီးသား)
+                _srt_segs = S.out_subs or S.recap_timeline or S.final_segments
                 st.download_button("⬇️ SRT", segments_to_srt(_srt_segs),
                                    file_name=f"{_dl}.srt", mime="text/plain",
                                    use_container_width=True)
