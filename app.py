@@ -190,8 +190,21 @@ def _spidey_steps(S, is_video, narr=False):
         """<style>
 div[data-testid="stHorizontalBlock"]:has(> :nth-child(6):last-child) {
     flex-wrap: nowrap !important;
+    gap: 0.25rem !important;
 }
 div[data-testid="stHorizontalBlock"]:has(> :nth-child(6):last-child) > div {
+    min-width: 0 !important;
+}
+div[data-testid="stHorizontalBlock"]:has(> :nth-child(6):last-child) button {
+    padding-left: 0.2rem !important;
+    padding-right: 0.2rem !important;
+}
+/* wizard bottom nav (.wiz-bnav marker နောက်က row): ခလုတ် ၂ ခု ဘေးချင်းကပ် */
+div:has(> .wiz-bnav) ~ div div[data-testid="stHorizontalBlock"] {
+    flex-wrap: nowrap !important;
+    gap: 0.5rem !important;
+}
+div:has(> .wiz-bnav) ~ div div[data-testid="stHorizontalBlock"] > div {
     min-width: 0 !important;
 }
 </style>""",
@@ -217,7 +230,7 @@ div[data-testid="stHorizontalBlock"]:has(> :nth-child(6):last-child) > div {
                 "⏭️" if i == 1 and not is_video else
                 "🔴" if i + 1 == cur else "⭕")
         with col:
-            if st.button(f"{i + 1} {icon}", key=f"wiz_nav_{i}",
+            if st.button(f"{i + 1}{icon}", key=f"wiz_nav_{i}",
                          type="primary" if i + 1 == cur else "secondary",
                          use_container_width=True,
                          disabled=(i + 1 == cur)):
@@ -1650,12 +1663,16 @@ def main():
             st.warning("⚠️ Groq / AssemblyAI API Key တစ်ခုခု ထည့်မှ စာသားထုတ်လို့ရမယ် "
                        "(ဘယ်ဘက် sidebar)။")
         else:
-            _lang_label = st.selectbox(
+            _lang_label = st.pills(
                 "🎙️ မူရင်းဘာသာစကား",
-                [lbl for lbl, _ in _SRC_LANGS], key="src_lang",
+                [lbl for lbl, _ in _SRC_LANGS],
+                selection_mode="single",
+                default=[lbl for lbl, _ in _SRC_LANGS][0],
+                key="src_lang_pills",
                 help="Whisper က ဘာသာစကား မှားသိတတ်တယ် (ဥပမာ English အသံကို "
                      "Tamil စာနဲ့ ရေးချတာ) — ဗီဒီယိုက ဘာဘာသာစကားလဲ သိရင် "
-                     "ဒီမှာ တိတိကျကျ ရွေးလိုက်။ မသိရင် Auto ထားခဲ့။")
+                     "ဒီမှာ တိတိကျကျ ရွေးလိုက်။ မသိရင် Auto ထားခဲ့။ "
+                     "(နှိပ်ရွေးရုံ — စာရိုက်စရာမလို)")
             _lang_code = dict(_SRC_LANGS)[_lang_label]
             _bc2, _ = st.columns([1, 2])
             with _bc2:
@@ -2069,19 +2086,31 @@ def main():
                                        file_name=f"{_dl}.srt", mime="text/plain",
                                        use_container_width=True)
         _spidey_card_close()
-    # ---- wizard အောက် nav (Next/Back)
-    _wn1, _wn2, _wn3 = st.columns([1, 2, 1])
+    # ---- wizard အောက် nav: စာအပေါ်, ခလုတ် ၂ ခု ဘေးချင်းကပ်
     _cur = max(1, min(6, int(S.get("wizard_step", 1))))
-    with _wn1:
-        if _cur > 1 and st.button("◀️ ပြန်သွား", key="wiz_back",
-                                  use_container_width=True):
+    st.caption(f"အဆင့် {_cur} / 6")
+    st.markdown('<div class="wiz-bnav"></div>', unsafe_allow_html=True)
+    _show_back = _cur > 1
+    _show_next = _cur < 6
+    if _show_back and _show_next:
+        _b1, _b2 = st.columns(2)
+        with _b1:
+            if st.button("◀️ ပြန်သွား", key="wiz_back",
+                         use_container_width=True):
+                S["wizard_step"] = _cur - 1
+                st.rerun()
+        with _b2:
+            if st.button("ဆက်သွား ▶️", key="wiz_next", type="primary",
+                         use_container_width=True):
+                S["wizard_step"] = _cur + 1
+                st.rerun()
+    elif _show_back:
+        if st.button("◀️ ပြန်သွား", key="wiz_back", use_container_width=True):
             S["wizard_step"] = _cur - 1
             st.rerun()
-    with _wn2:
-        st.caption(f"အဆင့် {_cur} / 6")
-    with _wn3:
-        if _cur < 6 and st.button("ဆက်သွား ▶️", key="wiz_next",
-                                  type="primary", use_container_width=True):
+    elif _show_next:
+        if st.button("ဆက်သွား ▶️", key="wiz_next", type="primary",
+                     use_container_width=True):
             S["wizard_step"] = _cur + 1
             st.rerun()
     st.markdown(
