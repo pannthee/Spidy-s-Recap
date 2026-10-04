@@ -1844,9 +1844,12 @@ def main():
             _work = S.translations
             _parse_ok = False
         _flags = find_problem_lines(_work, max_speed)
+        # ရှည်တဲ့စာတွေ မပြ — တခြားဘာသာစကား/script ညှပ်ပါလာတာပဲ ပြ
+        _flags = [(i, r) for (i, r) in _flags if "စာလုံး ပါနေတယ်" in r]
         if _flags:
             with st.expander(
-                    f"🔍 ပြဿနာရှိနိုင်တဲ့လိုင်းများ ({len(_flags)})", expanded=False):
+                    f"🔍 တခြားဘာသာစကား ပါနေတဲ့လိုင်းများ ({len(_flags)})",
+                    expanded=False):
                 st.caption("တစ်ခုချင်းနှိပ်ပြင်ရုံနဲ့ အောက်ကစာထဲ သူ့အလိုလို ဝင်သွားမယ်")
                 if not _parse_ok:
                     st.warning("အောက်ကစာမှာ ပုံစံမှားနေလို့ ဒီမှာ တိုက်ရိုက်ပြင်မရဘူး — "
