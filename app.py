@@ -957,43 +957,6 @@ def find_problem_lines(segments, max_speed):
     return flags
 
 
-def mix_ducked(video_path, voiceover_mp3, out_mp3):
-    """မူရင်းအသံ (HQ) + dub အသံ → ducking နဲ့ ရော.
-
-    စကားမပြောတဲ့အပိုင်း → မူရင်းအသံ (သီချင်း/SFX) အပြည့်၊
-    dub အသံထွက်နေချိန် → sidechaincompress က မူရင်းအသံကို
-    အလိုအလျောက် ဖိချမယ် (attack/release ကြောင့် ချောချောမွေ့မွေ့)။
-    ဗီဒီယိုမှာ audio stream မရှိရင် None ပြန်မယ်။
-    """
-    # မူရင်းမှာ audio ရှိမရှိ စစ်
-    r = subprocess.run(
-        ["ffprobe", "-v", "error", "-select_streams", "a",
-         "-show_entries", "stream=index", "-of", "csv=p=0", video_path],
-        capture_output=True, text=True)
-    if not r.stdout.strip():
-        return None
-    work = os.path.join(WORK_DIR, "ducktmp")
-    os.makedirs(work, exist_ok=True)
-    orig_hq = os.path.join(work, "orig_hq.mp3")
-    run(["ffmpeg", "-y", "-v", "error", "-i", video_path, "-vn",
-         "-ar", "44100", "-ac", "2", "-b:a", "128k", orig_hq])
-    # NOTE: mono->stereo via aformat alone LOSES ~8dB on the voice (ffmpeg's
-    # default upmix matrix attenuates). Use pan to duplicate mono c0 to both
-    # stereo channels at full level instead. (assemble_dubbed always emits mono.)
-    # NOTE 2: [key] feeds TWO filters -> must asplit first; reusing a pad
-    # without asplit silently feeds silence to the second consumer (voice lost!).
-    fc = (
-        "[0:a]aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo[orig];"
-        "[1:a]pan=stereo|c0=c0|c1=c0,aresample=44100,aformat=sample_fmts=fltp,asplit=2[k1][k2];"
-        "[orig][k1]sidechaincompress=threshold=0.05:ratio=8:attack=250:release=600[d];"
-        "[d][k2]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[m];"
-        "[m]alimiter=limit=0.95,aresample=44100,aformat=channel_layouts=stereo[out]"
-    )
-    run(["ffmpeg", "-y", "-v", "error", "-i", orig_hq, "-i", voiceover_mp3,
-         "-filter_complex", fc, "-map", "[out]",
-         "-c:a", "libmp3lame", "-b:a", "128k", out_mp3])
-    return out_mp3
-
 
 def _reset_review_keys(S):
     """ဘာသာပြန် အသစ်ရတိုင်း review textarea + quick-fix key တွေ ရှင်း
@@ -1114,10 +1077,6 @@ def main():
         auto_shorten = st.checkbox("✂️ စာရှည်ရင် Gemini နဲ့ အလိုအလျောက်တိုပေး", value=True,
                                    help="အချိန်ကွက်ထဲ မဝင်တဲ့လိုင်းတွေကို Gemini က တိုတိုပြန်ရေးပြီး "
                                         "အသံပြန်ထုတ်မယ် (တစ်ကြိမ်သာ)။ ပိတ်ထားရင် အရင်အတိုင်း")
-        keep_bg = st.checkbox("🎵 နောက်ခံအသံ ချန်ထား (ducking)", value=True,
-                              help="စကားမပြောတဲ့အပိုင်း → မူရင်းအသံ (သီချင်း/SFX) အပြည့်; "
-                                   "dub အသံထွက်နေချိန် → မူရင်းအသံ အလိုအလျောက် တိုးသွားမယ်။ "
-                                   "ဗီဒီယိုမုဒ်အတွက်သာ။ ပိတ်ထားရင် အရင်အတိုင်း (dub အသံသက်သက်)")
         st.markdown("##### 📖 နာမည်စာရင်း (Glossary)")
         glossary_raw = st.text_area(
             "ဇာတ်ကောင်နာမည်တွေ — တစ်ကြောင်းတစ်ခု",
@@ -1594,19 +1553,6 @@ def main():
                 with st.status("အသံဆက် + ဗီဒီယိုနဲ့ပေါင်းနေတယ်...", expanded=False):
                     assemble_dubbed(S.fitted, S.duration, work_asm, dubbed)
                     _final_audio = dubbed
-                    if keep_bg:
-                        _mixed = os.path.join(WORK_DIR, S.run_id, "dubbed_mixed.mp3")
-                        try:
-                            if mix_ducked(S.video_path, dubbed, _mixed):
-                                _final_audio = _mixed
-                                st.info("🎵 နောက်ခံအသံ (သီချင်း/SFX) ချန်ထားပြီး "
-                                        "dub အသံနဲ့ ရောထားတယ်")
-                            else:
-                                st.caption("မူရင်းဗီဒီယိုမှာ အသံလမ်းမရှိလို့ "
-                                           "dub အသံသက်သက် သုံးထားတယ်")
-                        except Exception as e:
-                            st.warning("ducking မအောင်မြင်လို့ dub အသံသက်သက် "
-                                       f"သုံးထားတယ်: {e}")
                     mux_video(S.video_path, _final_audio, out)
                 S.out_mp4 = out
                 st.success("✅ ပြီးပြီ! အောက်မှာ download ချလို့ရပြီ")
