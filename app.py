@@ -182,7 +182,7 @@ def _spidey_card_close():
 
 
 def _spidey_steps(S, is_video, narr=False):
-    """အဆင့် ၆ ဆင့်ရဲ့ တိုးတက်မှုကို ပြတဲ့ tracker."""
+    """Wizard nav — အဆင့် ၆ ခု, နှိပ်ပြီး ကူးလို့ရ (ဖုန်းမှာ ၂ တန်း x ၃ ကောလံ)."""
     import streamlit as st
     labels = ["ဖိုင်တင်", "စာသားထုတ်",
               "Narrator" if narr else "ဘာသာပြန်",
@@ -199,24 +199,22 @@ def _spidey_steps(S, is_video, narr=False):
         bool(S.fitted),
         has_out,
     ]
-    skip = [False, not is_video, False, False, False, False]
-    cur = next((i for i in range(6) if not done[i] and not skip[i]), None)
-    parts = []
-    for i, lab in enumerate(labels):
-        if done[i]:
-            cls, icon = "done", "✅"
-        elif skip[i]:
-            cls, icon = "skip", "⏭️"
-        elif i == cur:
-            cls, icon = "current", "🔴"
-        else:
-            cls, icon = "todo", "⭕"
-        parts.append(
-            f'<div class="spidey-step {cls}"><span class="n">{icon}</span>{i + 1}. {lab}</div>'
-        )
-    st.markdown('<div class="spidey-steps">' + "".join(parts) + "</div>",
-                unsafe_allow_html=True)
-
+    cur = max(1, min(6, int(S.get("wizard_step", 1))))
+    S["wizard_step"] = cur  # clamp
+    for row in range(2):
+        cols = st.columns(3)
+        for c in range(3):
+            k = row * 3 + c
+            icon = ("✅" if done[k] else
+                    "⏭️" if k == 1 and not is_video else
+                    "🔴" if k + 1 == cur else "⭕")
+            with cols[c]:
+                if st.button(f"{k + 1}. {labels[k]} {icon}", key=f"wiz_nav_{k}",
+                             type="primary" if k + 1 == cur else "secondary",
+                             use_container_width=True,
+                             disabled=(k + 1 == cur)):
+                    S["wizard_step"] = k + 1
+                    st.rerun()
 
 GROQ_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
 GROQ_MODEL = "whisper-large-v3-turbo"  # sub-translator မှာ အလုပ်ဖြစ်နေတဲ့ model
@@ -1330,6 +1328,7 @@ def _init_state(st):
         "scenes": None, "scene_descs": None,
         "recap_timeline": None, "recap_report": None,
         "out_subs": None,
+        "wizard_step": 1,
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -1554,498 +1553,529 @@ def main():
         narr = narr_choice.startswith("🎙️")
     _spidey_steps(S, is_video, narr)
 
-    # ---- အဆင့် ၁: upload (ဗီဒီယို / SRT)
-    _spidey_card_open(1, "ဗီဒီယိုတင်ပါ" if is_video else "SRT ဖိုင်တင်ပါ")
-    if is_video:
-        up = st.file_uploader("MP4 / MOV / WEBM ဖိုင်ရွေးပါ", type=["mp4", "mov", "webm"])
-        if S.video_path:
-            st.info(f"📁 {os.path.basename(S.video_path)} — {S.duration:.1f} စက္ကန့်")
-        _bc1, _ = st.columns([1, 2])
-        with _bc1:
-            _go1 = (st.button("▶️ အသံထုတ်ယူရန်", type="primary",
-                              use_container_width=True)
-                    if up is not None else False)
-        if _go1:
-            run_id = uuid.uuid4().hex[:8]
-            rd = os.path.join(WORK_DIR, run_id)
-            os.makedirs(rd, exist_ok=True)
-            vpath = os.path.join(rd, up.name)
-            with open(vpath, "wb") as f:
-                f.write(up.getbuffer())
-            wpath = os.path.join(rd, "audio.mp3")
-            with st.status("ffmpeg နဲ့ အသံထုတ်နေတယ်...", expanded=False):
-                run(["ffmpeg", "-y", "-v", "error", "-i", vpath,
-                     "-ar", "16000", "-ac", "1", "-b:a", "32k", wpath])
-                d = dur(vpath)
-            S.update(run_id=run_id, video_path=vpath, audio_path=wpath, duration=d,
-                     src_segments=None, translations=None, final_segments=None,
-                     fitted=None, fit_report=None, out_mp4=None, out_mp3=None,
-                     dl_base=os.path.splitext(up.name)[0])
-            st.success(f"✅ အသံထုတ်ပြီးပြီ — ဗီဒီယို {d:.1f} စက္ကန့်")
-            st.rerun()
-    else:
-        srt_up = st.file_uploader("SRT ဖိုင်ရွေးပါ", type=["srt"], key="srt_up")
-        srt_lang_choice = st.radio(
-            "SRT က ဘယ်ဘာသာစကားလဲ",
-            ["🌐 ဘာသာခြား (ဘာသာပြန်မယ်)", "✅ မြန်မာလို အဆင်သင့် (တိုက်ရိုက်အသံထုတ်မယ်)"],
-            horizontal=True, key="srt_lang_radio")
-        is_my = srt_lang_choice.startswith("✅")
-        if S.src_segments:
-            st.info(f"📄 {S.srt_name} — အပိုင်း {len(S.src_segments)} ခု")
-        _bc1s, _ = st.columns([1, 2])
-        with _bc1s:
-            _gos = (st.button("▶️ SRT ဖတ်ရန်", type="primary",
-                              use_container_width=True)
-                    if srt_up is not None else False)
-        if _gos:
-            raw = srt_up.getbuffer()
-            text = None
-            for enc in ("utf-8-sig", "utf-16", "cp1252"):
-                try:
-                    text = bytes(raw).decode(enc)
-                    break
-                except (UnicodeDecodeError, ValueError):
-                    continue
-            segs = parse_srt(text or "")
-            if not segs:
-                st.error("SRT ထဲမှာ စာသားမတွေ့ဘူး — ဖိုင်စစ်ကြည့်ပါ")
-                st.stop()
-            run_id = uuid.uuid4().hex[:8]
-            rd = os.path.join(WORK_DIR, run_id)
-            os.makedirs(rd, exist_ok=True)
-            S.update(run_id=run_id, video_path=None, audio_path=None,
-                     duration=segs[-1]["end"],
-                     src_segments=segs, lang="",
-                     translations=None, final_segments=None,
-                     fitted=None, fit_report=None, out_mp4=None, out_mp3=None,
-                     srt_name=srt_up.name, srt_is_my=is_my,
-                     dl_base=os.path.splitext(srt_up.name)[0])
-            if is_my:
-                # မြန်မာလို အဆင်သင့်မို့ ဘာသာပြန်စရာမလို — အဆင့် ၄ တန်းသွား
-                S.translations = [{"start": s["start"], "end": s["end"],
-                                   "text": s["text"], "src": ""} for s in segs]
-            _reset_review_keys(S)
-            st.success(f"✅ SRT ဖတ်ပြီးပြီ — အပိုင်း {len(segs)} ခု")
-            st.rerun()
-    _spidey_card_close()
-
-    # ---- အဆင့် ၂: transcribe (ဗီဒီယိုမုဒ်သာ)
-    _spidey_card_open(2, "အသံမှ စာသားထုတ်")
-    if not is_video:
-        st.info("📄 SRT ဖိုင်ကနေ တိုက်ရိုက်ရပြီးမို့ ဒီအဆင့်မလိုဘူး — အဆင့် ၃ ကို ဆက်သွားပါ။")
-    elif not S.audio_path:
-        st.caption("အရင်ဆုံး အဆင့် ၁ မှာ ဗီဒီယိုတင်ပါ။")
-    elif not (groq_key or assembly_key):
-        st.warning("⚠️ Groq / AssemblyAI API Key တစ်ခုခု ထည့်မှ စာသားထုတ်လို့ရမယ် "
-                   "(ဘယ်ဘက် sidebar)။")
-    else:
-        _lang_label = st.selectbox(
-            "🎙️ မူရင်းဘာသာစကား",
-            [lbl for lbl, _ in _SRC_LANGS], key="src_lang",
-            help="Whisper က ဘာသာစကား မှားသိတတ်တယ် (ဥပမာ English အသံကို "
-                 "Tamil စာနဲ့ ရေးချတာ) — ဗီဒီယိုက ဘာဘာသာစကားလဲ သိရင် "
-                 "ဒီမှာ တိတိကျကျ ရွေးလိုက်။ မသိရင် Auto ထားခဲ့။")
-        _lang_code = dict(_SRC_LANGS)[_lang_label]
-        _bc2, _ = st.columns([1, 2])
-        with _bc2:
-            _go2 = st.button("🎤 နားထောင်ပြီး စာသားထုတ်ရန်", type="primary",
-                             use_container_width=True)
-        if _go2:
-            _init_label = ("Groq Whisper API နဲ့ နားထောင်နေတယ်..."
-                           if groq_key else "AssemblyAI နဲ့ နားထောင်နေတယ်...")
-            with st.status(_init_label, expanded=True) as stt:
-                try:
-                    def _note(msg):
-                        stt.update(label=msg)
-                    data, _provider = transcribe_with_fallback(
-                        S.audio_path, groq_key or None,
-                        assembly_key if use_fallback else None,
-                        language=_lang_code, on_note=_note)
-                except Exception as e:
-                    stt.update(state="error")
-                    st.error(str(e))
+    if S["wizard_step"] == 1:
+        # ---- အဆင့် ၁: upload (ဗီဒီယို / SRT)
+        _spidey_card_open(1, "ဗီဒီယိုတင်ပါ" if is_video else "SRT ဖိုင်တင်ပါ")
+        if is_video:
+            up = st.file_uploader("MP4 / MOV / WEBM ဖိုင်ရွေးပါ", type=["mp4", "mov", "webm"])
+            if S.video_path:
+                st.info(f"📁 {os.path.basename(S.video_path)} — {S.duration:.1f} စက္ကန့်")
+            _bc1, _ = st.columns([1, 2])
+            with _bc1:
+                _go1 = (st.button("▶️ အသံထုတ်ယူရန်", type="primary",
+                                  use_container_width=True)
+                        if up is not None else False)
+            if _go1:
+                run_id = uuid.uuid4().hex[:8]
+                rd = os.path.join(WORK_DIR, run_id)
+                os.makedirs(rd, exist_ok=True)
+                vpath = os.path.join(rd, up.name)
+                with open(vpath, "wb") as f:
+                    f.write(up.getbuffer())
+                wpath = os.path.join(rd, "audio.mp3")
+                with st.status("ffmpeg နဲ့ အသံထုတ်နေတယ်...", expanded=False):
+                    run(["ffmpeg", "-y", "-v", "error", "-i", vpath,
+                         "-ar", "16000", "-ac", "1", "-b:a", "32k", wpath])
+                    d = dur(vpath)
+                S.update(run_id=run_id, video_path=vpath, audio_path=wpath, duration=d,
+                         src_segments=None, translations=None, final_segments=None,
+                         fitted=None, fit_report=None, out_mp4=None, out_mp3=None,
+                         dl_base=os.path.splitext(up.name)[0])
+                st.toast(f"✅ အသံထုတ်ပြီးပြီ — ဗီဒီယို {d:.1f} စက္ကန့်")
+                S["wizard_step"] = 2
+                st.rerun()
+        else:
+            srt_up = st.file_uploader("SRT ဖိုင်ရွေးပါ", type=["srt"], key="srt_up")
+            srt_lang_choice = st.radio(
+                "SRT က ဘယ်ဘာသာစကားလဲ",
+                ["🌐 ဘာသာခြား (ဘာသာပြန်မယ်)", "✅ မြန်မာလို အဆင်သင့် (တိုက်ရိုက်အသံထုတ်မယ်)"],
+                horizontal=True, key="srt_lang_radio")
+            is_my = srt_lang_choice.startswith("✅")
+            if S.src_segments:
+                st.info(f"📄 {S.srt_name} — အပိုင်း {len(S.src_segments)} ခု")
+            _bc1s, _ = st.columns([1, 2])
+            with _bc1s:
+                _gos = (st.button("▶️ SRT ဖတ်ရန်", type="primary",
+                                  use_container_width=True)
+                        if srt_up is not None else False)
+            if _gos:
+                raw = srt_up.getbuffer()
+                text = None
+                for enc in ("utf-8-sig", "utf-16", "cp1252"):
+                    try:
+                        text = bytes(raw).decode(enc)
+                        break
+                    except (UnicodeDecodeError, ValueError):
+                        continue
+                segs = parse_srt(text or "")
+                if not segs:
+                    st.error("SRT ထဲမှာ စာသားမတွေ့ဘူး — ဖိုင်စစ်ကြည့်ပါ")
                     st.stop()
-            segs = [{"start": x["start"], "end": x["end"], "text": x["text"]}
-                    for x in data.get("segments", [])]
-            merge_note = ""
-            if auto_merge:
-                before = len(segs)
-                segs = merge_tiny_segments(segs)
-                if len(segs) < before:
-                    merge_note = f" (အပိုင်းသေး {before - len(segs)} ခု ပေါင်းပြီးပြီ)"
-            S.src_segments, S.lang = segs, data.get("language", "")
-            S.translations, S.final_segments, S.fitted = None, None, None
-            stt.update(state="complete")
-            _via = "Groq" if _provider == "groq" else "AssemblyAI"
-            st.success(f"✅ အပိုင်း {len(segs)} ခု တွေ့တယ် ({_via}){merge_note}"
-                       + (f" (ဘာသာစကား: {S.lang})" if S.lang else ""))
-        if S.src_segments:
-            with st.expander(f"တွေ့တဲ့အပိုင်း {len(S.src_segments)} ခု ကြည့်"):
-                for s in S.src_segments[:50]:
-                    st.write(f"`{fmt_ts(s['start'])} → {fmt_ts(s['end'])}` {s['text']}")
-                if len(S.src_segments) > 50:
-                    st.caption(f"...နောက် {len(S.src_segments) - 50} ခု ကျန်သေးတယ်")
+                run_id = uuid.uuid4().hex[:8]
+                rd = os.path.join(WORK_DIR, run_id)
+                os.makedirs(rd, exist_ok=True)
+                S.update(run_id=run_id, video_path=None, audio_path=None,
+                         duration=segs[-1]["end"],
+                         src_segments=segs, lang="",
+                         translations=None, final_segments=None,
+                         fitted=None, fit_report=None, out_mp4=None, out_mp3=None,
+                         srt_name=srt_up.name, srt_is_my=is_my,
+                         dl_base=os.path.splitext(srt_up.name)[0])
+                if is_my:
+                    # မြန်မာလို အဆင်သင့်မို့ ဘာသာပြန်စရာမလို — အဆင့် ၄ တန်းသွား
+                    S.translations = [{"start": s["start"], "end": s["end"],
+                                       "text": s["text"], "src": ""} for s in segs]
+                _reset_review_keys(S)
+                st.toast(f"✅ SRT ဖတ်ပြီးပြီ — အပိုင်း {len(segs)} ခု")
+                S["wizard_step"] = 4 if is_my else 3
+                st.rerun()
+        _spidey_card_close()
 
-    _spidey_card_close()
-
-    # ---- အဆင့် ၃: translate / narrator script
-    _spidey_card_open(3, "🎙️ Narrator script ရေး" if narr else "မြန်မာလို ဘာသာပြန်")
-    if narr:
-        # 🎙️ narrator mode: scene ခွဲ → AI ကြည့် → script ရေး →
-        # ရလာတဲ့ script က S.translations ထဲ {start,end,text,src} ပုံစံနဲ့ ဝင်မယ် —
-        # အဆင့် ၄/၅/၆ က အဟောင်းအတိုင်း ဒီအတိုင်း ဆက်သုံးလို့ရတယ်
-        if not S.video_path:
+    if S["wizard_step"] == 2:
+        # ---- အဆင့် ၂: transcribe (ဗီဒီယိုမုဒ်သာ)
+        _spidey_card_open(2, "အသံမှ စာသားထုတ်")
+        if not is_video:
+            st.info("📄 SRT ဖိုင်ကနေ တိုက်ရိုက်ရပြီးမို့ ဒီအဆင့်မလိုဘူး — အဆင့် ၃ ကို ဆက်သွားပါ။")
+        elif not S.audio_path:
             st.caption("အရင်ဆုံး အဆင့် ၁ မှာ ဗီဒီယိုတင်ပါ။")
-        elif not S.src_segments:
-            st.caption("အရင်ဆုံး အဆင့် ၂ မှာ အသံမှ စာသားထုတ်ပါ "
-                       "(dialogue context အတွက် လိုတယ်)။")
-        elif not api_key:
-            st.warning("⚠️ Gemini API key ထည့်မှ narrator script ရေးလို့ရမယ် "
+        elif not (groq_key or assembly_key):
+            st.warning("⚠️ Groq / AssemblyAI API Key တစ်ခုခု ထည့်မှ စာသားထုတ်လို့ရမယ် "
                        "(ဘယ်ဘက် sidebar)။")
         else:
-            _mid = model_id.strip() or GEMINI_MODEL_DEFAULT
-            st.caption("Scene ခွဲ → AI က scene တွေကြည့် → "
-                       "third-person မြန်မာ narrator script ရေး")
-            _bc3a, _ = st.columns([1, 2])
-            with _bc3a:
-                _go3a = st.button("🎬 ① Scene ခွဲရန်", type="primary",
+            _lang_label = st.selectbox(
+                "🎙️ မူရင်းဘာသာစကား",
+                [lbl for lbl, _ in _SRC_LANGS], key="src_lang",
+                help="Whisper က ဘာသာစကား မှားသိတတ်တယ် (ဥပမာ English အသံကို "
+                     "Tamil စာနဲ့ ရေးချတာ) — ဗီဒီယိုက ဘာဘာသာစကားလဲ သိရင် "
+                     "ဒီမှာ တိတိကျကျ ရွေးလိုက်။ မသိရင် Auto ထားခဲ့။")
+            _lang_code = dict(_SRC_LANGS)[_lang_label]
+            _bc2, _ = st.columns([1, 2])
+            with _bc2:
+                _go2 = st.button("🎤 နားထောင်ပြီး စာသားထုတ်ရန်", type="primary",
                                  use_container_width=True)
-            if _go3a:
-                with st.spinner("Scene ဖြတ်တဲ့နေရာတွေ ရှာနေတယ်..."):
-                    S.scenes = detect_scenes(S.video_path)
-                S.scene_descs, S.translations = None, None
-                S.final_segments, S.fitted = None, None
-                _reset_review_keys(S)
-                st.success(f"✅ Scene {len(S.scenes)} ခု တွေ့တယ်")
+            if _go2:
+                _init_label = ("Groq Whisper API နဲ့ နားထောင်နေတယ်..."
+                               if groq_key else "AssemblyAI နဲ့ နားထောင်နေတယ်...")
+                with st.status(_init_label, expanded=True) as stt:
+                    try:
+                        def _note(msg):
+                            stt.update(label=msg)
+                        data, _provider = transcribe_with_fallback(
+                            S.audio_path, groq_key or None,
+                            assembly_key if use_fallback else None,
+                            language=_lang_code, on_note=_note)
+                    except Exception as e:
+                        stt.update(state="error")
+                        st.error(str(e))
+                        st.stop()
+                segs = [{"start": x["start"], "end": x["end"], "text": x["text"]}
+                        for x in data.get("segments", [])]
+                merge_note = ""
+                if auto_merge:
+                    before = len(segs)
+                    segs = merge_tiny_segments(segs)
+                    if len(segs) < before:
+                        merge_note = f" (အပိုင်းသေး {before - len(segs)} ခု ပေါင်းပြီးပြီ)"
+                S.src_segments, S.lang = segs, data.get("language", "")
+                S.translations, S.final_segments, S.fitted = None, None, None
+                stt.update(state="complete")
+                _via = "Groq" if _provider == "groq" else "AssemblyAI"
+                st.toast(f"✅ အပိုင်း {len(segs)} ခု တွေ့တယ် ({_via}){merge_note}"
+                         + (f" (ဘာသာစကား: {S.lang})" if S.lang else ""))
+                S["wizard_step"] = 3
                 st.rerun()
-            if S.scenes:
-                _longest = max(s["end"] - s["start"] for s in S.scenes)
-                st.caption(f"🎬 Scene {len(S.scenes)} ခု — "
-                           f"အရှည်ဆုံး {_longest:.1f} စက္ကန့်")
-                _bc3b, _ = st.columns([1, 2])
-                with _bc3b:
-                    _go3b = st.button("👁️ ② AI က scene တွေကြည့်ရန်",
-                                     type="primary", use_container_width=True)
-                if _go3b:
-                    prog = st.progress(0.0, "AI က scene တွေကို ကြည့်နေတယ်...")
-                    try:
-                        S.scene_descs = describe_scenes(
-                            api_key, _mid, S.video_path, S.scenes,
-                            os.path.join(WORK_DIR, S.run_id, "narr"),
-                            progress_cb=lambda f: prog.progress(f))
-                    except Exception as e:
-                        prog.empty()
-                        st.error(f"Vision ပျက်သွားတယ်: {e}")
-                        st.stop()
-                    prog.empty()
-                    _nd = sum(1 for d in S.scene_descs if d["desc"])
-                    if _nd == 0:
-                        st.warning("⚠️ AI က scene တွေ မမြင်ရဘူး — "
-                                   "transcript-only နဲ့ ဆက်မယ်")
-                    else:
-                        st.success(f"✅ {_nd}/{len(S.scene_descs)} scene "
-                                   "မြင်ပြီးပြီ")
-                    st.rerun()
-            if S.scene_descs:
-                with st.expander(
-                        f"👁️ Scene ဖော်ပြချက် {len(S.scene_descs)} ခု ကြည့်"):
-                    for d in S.scene_descs[:20]:
-                        st.write(f"`{fmt_ts(d['start'])} → {fmt_ts(d['end'])}` "
-                                 f"{d['desc'] or '—'}")
-                    if len(S.scene_descs) > 20:
-                        st.caption(f"...နောက် {len(S.scene_descs) - 20} ခု "
-                                   "ကျန်သေးတယ်")
-                _bc3c, _ = st.columns([1, 2])
-                with _bc3c:
-                    _go3c = st.button("🎙️ ③ Narrator script ရေးရန်",
-                                     type="primary", use_container_width=True)
-                if _go3c:
-                    prog = st.progress(0.0, "Narrator script ရေးနေတယ်...")
-                    try:
-                        S.translations = gemini_narrate(
-                            api_key, _mid, S.scene_descs, S.src_segments,
-                            glossary=glossary,
-                            progress_cb=lambda f: prog.progress(f))
-                    except Exception as e:
-                        prog.empty()
-                        st.error(f"Script ရေးတာ ပျက်သွားတယ်: {e}")
-                        st.stop()
+            if S.src_segments:
+                with st.expander(f"တွေ့တဲ့အပိုင်း {len(S.src_segments)} ခု ကြည့်"):
+                    for s in S.src_segments[:50]:
+                        st.write(f"`{fmt_ts(s['start'])} → {fmt_ts(s['end'])}` {s['text']}")
+                    if len(S.src_segments) > 50:
+                        st.caption(f"...နောက် {len(S.src_segments) - 50} ခု ကျန်သေးတယ်")
+
+        _spidey_card_close()
+
+    if S["wizard_step"] == 3:
+        # ---- အဆင့် ၃: translate / narrator script
+        _spidey_card_open(3, "🎙️ Narrator script ရေး" if narr else "မြန်မာလို ဘာသာပြန်")
+        if narr:
+            # 🎙️ narrator mode: scene ခွဲ → AI ကြည့် → script ရေး →
+            # ရလာတဲ့ script က S.translations ထဲ {start,end,text,src} ပုံစံနဲ့ ဝင်မယ် —
+            # အဆင့် ၄/၅/၆ က အဟောင်းအတိုင်း ဒီအတိုင်း ဆက်သုံးလို့ရတယ်
+            if not S.video_path:
+                st.caption("အရင်ဆုံး အဆင့် ၁ မှာ ဗီဒီယိုတင်ပါ။")
+            elif not S.src_segments:
+                st.caption("အရင်ဆုံး အဆင့် ၂ မှာ အသံမှ စာသားထုတ်ပါ "
+                           "(dialogue context အတွက် လိုတယ်)။")
+            elif not api_key:
+                st.warning("⚠️ Gemini API key ထည့်မှ narrator script ရေးလို့ရမယ် "
+                           "(ဘယ်ဘက် sidebar)။")
+            else:
+                _mid = model_id.strip() or GEMINI_MODEL_DEFAULT
+                st.caption("Scene ခွဲ → AI က scene တွေကြည့် → "
+                           "third-person မြန်မာ narrator script ရေး")
+                _bc3a, _ = st.columns([1, 2])
+                with _bc3a:
+                    _go3a = st.button("🎬 ① Scene ခွဲရန်", type="primary",
+                                     use_container_width=True)
+                if _go3a:
+                    with st.spinner("Scene ဖြတ်တဲ့နေရာတွေ ရှာနေတယ်..."):
+                        S.scenes = detect_scenes(S.video_path)
+                    S.scene_descs, S.translations = None, None
                     S.final_segments, S.fitted = None, None
                     _reset_review_keys(S)
-                    prog.empty()
-                    st.success(f"✅ {len(S.translations)} scene အတွက် script "
-                               "ရပြီးပြီ — အဆင့် ၄ မှာ စစ်ပါ")
+                    st.success(f"✅ Scene {len(S.scenes)} ခု တွေ့တယ်")
                     st.rerun()
-            if S.translations:
-                with st.expander("🎙️ Narrator script ကြည့်"):
-                    for s in S.translations[:20]:
-                        st.write(f"`{fmt_ts(s['start'])}` {s['text']}")
-                    if len(S.translations) > 20:
-                        st.caption(f"...နောက် {len(S.translations) - 20} ခု "
-                                   "ကျန်သေးတယ်")
-        _spidey_card_close()
-    else:
-        if not S.src_segments:
-            st.caption("အရင်ဆုံး အဆင့် ၁ မှာ " +
-                       ("ဗီဒီယိုတင်" if is_video else "SRT ဖိုင်တင်") + "ပါ။")
-        elif S.get("srt_is_my"):
-            st.info("✅ SRT က မြန်မာလိုအဆင်သင့်မို့ ဘာသာပြန်စရာမလိုဘူး — "
-                    "အဆင့် ၄ ကို ဆက်သွားပါ။")
-            if S.translations:
-                with st.expander("SRT စာသား ကြည့်"):
-                    for s in S.translations[:30]:
-                        st.write(f"`{fmt_ts(s['start'])}` {s['text']}")
-        elif not api_key:
-            st.warning("⚠️ Gemini API key ထည့်မှ ဘာသာပြန်လို့ရမယ် (ဘယ်ဘက် sidebar)။")
+                if S.scenes:
+                    _longest = max(s["end"] - s["start"] for s in S.scenes)
+                    st.caption(f"🎬 Scene {len(S.scenes)} ခု — "
+                               f"အရှည်ဆုံး {_longest:.1f} စက္ကန့်")
+                    _bc3b, _ = st.columns([1, 2])
+                    with _bc3b:
+                        _go3b = st.button("👁️ ② AI က scene တွေကြည့်ရန်",
+                                         type="primary", use_container_width=True)
+                    if _go3b:
+                        prog = st.progress(0.0, "AI က scene တွေကို ကြည့်နေတယ်...")
+                        try:
+                            S.scene_descs = describe_scenes(
+                                api_key, _mid, S.video_path, S.scenes,
+                                os.path.join(WORK_DIR, S.run_id, "narr"),
+                                progress_cb=lambda f: prog.progress(f))
+                        except Exception as e:
+                            prog.empty()
+                            st.error(f"Vision ပျက်သွားတယ်: {e}")
+                            st.stop()
+                        prog.empty()
+                        _nd = sum(1 for d in S.scene_descs if d["desc"])
+                        if _nd == 0:
+                            st.warning("⚠️ AI က scene တွေ မမြင်ရဘူး — "
+                                       "transcript-only နဲ့ ဆက်မယ်")
+                        else:
+                            st.success(f"✅ {_nd}/{len(S.scene_descs)} scene "
+                                       "မြင်ပြီးပြီ")
+                        st.rerun()
+                if S.scene_descs:
+                    with st.expander(
+                            f"👁️ Scene ဖော်ပြချက် {len(S.scene_descs)} ခု ကြည့်"):
+                        for d in S.scene_descs[:20]:
+                            st.write(f"`{fmt_ts(d['start'])} → {fmt_ts(d['end'])}` "
+                                     f"{d['desc'] or '—'}")
+                        if len(S.scene_descs) > 20:
+                            st.caption(f"...နောက် {len(S.scene_descs) - 20} ခု "
+                                       "ကျန်သေးတယ်")
+                    _bc3c, _ = st.columns([1, 2])
+                    with _bc3c:
+                        _go3c = st.button("🎙️ ③ Narrator script ရေးရန်",
+                                         type="primary", use_container_width=True)
+                    if _go3c:
+                        prog = st.progress(0.0, "Narrator script ရေးနေတယ်...")
+                        try:
+                            S.translations = gemini_narrate(
+                                api_key, _mid, S.scene_descs, S.src_segments,
+                                glossary=glossary,
+                                progress_cb=lambda f: prog.progress(f))
+                        except Exception as e:
+                            prog.empty()
+                            st.error(f"Script ရေးတာ ပျက်သွားတယ်: {e}")
+                            st.stop()
+                        S.final_segments, S.fitted = None, None
+                        _reset_review_keys(S)
+                        prog.empty()
+                        st.toast(f"✅ {len(S.translations)} scene အတွက် script ရပြီးပြီ")
+                        S["wizard_step"] = 4
+                        st.rerun()
+                if S.translations:
+                    with st.expander("🎙️ Narrator script ကြည့်"):
+                        for s in S.translations[:20]:
+                            st.write(f"`{fmt_ts(s['start'])}` {s['text']}")
+                        if len(S.translations) > 20:
+                            st.caption(f"...နောက် {len(S.translations) - 20} ခု "
+                                       "ကျန်သေးတယ်")
+            _spidey_card_close()
         else:
-            _bc3, _ = st.columns([1, 2])
-            with _bc3:
-                _go3 = st.button("🌐 သဘာဝကျတဲ့ ပြောစကားမြန်မာလို ပြန်ရန်",
-                                 type="primary", use_container_width=True)
-            if _go3:
-                prog = st.progress(0.0, "Gemini နဲ့ ဘာသာပြန်နေတယ်...")
-                try:
-                    result, failed = gemini_translate(
-                        api_key, S.src_segments, model_id.strip() or GEMINI_MODEL_DEFAULT,
-                        progress_cb=lambda f: prog.progress(f), glossary=glossary,
-                        recap=recap_style)
-                except Exception as e:
-                    st.error(f"ဘာသာပြန်တာ ပျက်သွားတယ်: {e}")
-                    st.stop()
-                S.translations, S.final_segments, S.fitted = result, None, None
-                _reset_review_keys(S)
-                prog.empty()
-                if failed:
-                    st.warning(f"⚠️ {len(failed)} ပိုင်း ပြန်မရလို့ မူရင်းစာသားအတိုင်း ထားထားတယ်")
-                st.success(f"✅ {len(result)} ပိုင်း ဘာသာပြန်ပြီးပြီ")
-            if S.translations:
-                with st.expander("ဘာသာပြန်ချက် ကြည့်"):
-                    for s in S.translations[:30]:
-                        st.write(f"`{fmt_ts(s['start'])}` {s['text']}")
-                        st.caption(f"မူရင်း: {s['src'][:80]}")
+            if not S.src_segments:
+                st.caption("အရင်ဆုံး အဆင့် ၁ မှာ " +
+                           ("ဗီဒီယိုတင်" if is_video else "SRT ဖိုင်တင်") + "ပါ။")
+            elif S.get("srt_is_my"):
+                st.info("✅ SRT က မြန်မာလိုအဆင်သင့်မို့ ဘာသာပြန်စရာမလိုဘူး — "
+                        "အဆင့် ၄ ကို ဆက်သွားပါ။")
+                if S.translations:
+                    with st.expander("SRT စာသား ကြည့်"):
+                        for s in S.translations[:30]:
+                            st.write(f"`{fmt_ts(s['start'])}` {s['text']}")
+            elif not api_key:
+                st.warning("⚠️ Gemini API key ထည့်မှ ဘာသာပြန်လို့ရမယ် (ဘယ်ဘက် sidebar)။")
+            else:
+                _bc3, _ = st.columns([1, 2])
+                with _bc3:
+                    _go3 = st.button("🌐 သဘာဝကျတဲ့ ပြောစကားမြန်မာလို ပြန်ရန်",
+                                     type="primary", use_container_width=True)
+                if _go3:
+                    prog = st.progress(0.0, "Gemini နဲ့ ဘာသာပြန်နေတယ်...")
+                    try:
+                        result, failed = gemini_translate(
+                            api_key, S.src_segments, model_id.strip() or GEMINI_MODEL_DEFAULT,
+                            progress_cb=lambda f: prog.progress(f), glossary=glossary,
+                            recap=recap_style)
+                    except Exception as e:
+                        st.error(f"ဘာသာပြန်တာ ပျက်သွားတယ်: {e}")
+                        st.stop()
+                    S.translations, S.final_segments, S.fitted = result, None, None
+                    _reset_review_keys(S)
+                    prog.empty()
+                    if failed:
+                        st.warning(f"⚠️ {len(failed)} ပိုင်း ပြန်မရလို့ မူရင်းစာသားအတိုင်း ထားထားတယ်")
+                    st.toast(f"✅ {len(result)} ပိုင်း ဘာသာပြန်ပြီးပြီ")
+                    S["wizard_step"] = 4
+                    st.rerun()
+                if S.translations:
+                    with st.expander("ဘာသာပြန်ချက် ကြည့်"):
+                        for s in S.translations[:30]:
+                            st.write(f"`{fmt_ts(s['start'])}` {s['text']}")
+                            st.caption(f"မူရင်း: {s['src'][:80]}")
 
-        _spidey_card_close()
+            _spidey_card_close()
 
-    # ---- အဆင့် ၄: review / edit
-    _spidey_card_open(4, "စာသားစစ် / ပြင်")
-    if not S.translations:
-        st.caption("အရင်ဆုံး အဆင့် ၃ မှာ ဘာသာပြန်ပါ။")
-    else:
-        # 🔍 ပြဿနာလိုင်းရှာသူ — textarea မပေါ်ခင် အရင်စစ်တာ:
-        # ဒီအစဉ်လိုက်ထားမှ quick-fix က textarea�ဲ ဒီတစ်ပတ်တည်း တိုက်ရိုက်ရေးလို့ရမယ်
-        # (widget ပေါ်ပြီးမှ session_state ပြင်ရင် Streamlit က error ထုတ်လို့)
-        _cur_raw = S.get("review_text")
-        if _cur_raw is None:
-            _cur_raw = segments_to_review_text(S.translations)
-        try:
-            _work = parse_review_text(_cur_raw)
-            _parse_ok = True
-        except ValueError:
-            _work = S.translations
-            _parse_ok = False
-        _flags = find_problem_lines(_work, max_speed)
-        # ရှည်တဲ့စာတွေ မပြ — တခြားဘာသာစကား/script ညှပ်ပါလာတာပဲ ပြ
-        _flags = [(i, r) for (i, r) in _flags if "စာလုံး ပါနေတယ်" in r]
-        if _flags:
-            with st.expander(
-                    f"🔍 တခြားဘာသာစကား ပါနေတဲ့လိုင်းများ ({len(_flags)})",
-                    expanded=False):
-                st.caption("တစ်ခုချင်းနှိပ်ပြင်ရုံနဲ့ အောက်ကစာထဲ သူ့အလိုလို ဝင်သွားမယ်")
-                if not _parse_ok:
-                    st.warning("အောက်ကစာမှာ ပုံစံမှားနေလို့ ဒီမှာ တိုက်ရိုက်ပြင်မရဘူး — "
-                               "အရင်ပြင်လိုက်ပါ")
-                for (i, _reason) in _flags:
-                    _s = _work[i]
-                    _fk = f"fixline_{S.run_id}_{i}"
-                    _new = st.text_input(
-                        f"#{i + 1} `{fmt_ts(_s['start'])} → {fmt_ts(_s['end'])}` — {_reason}",
-                        value=_s["text"], key=_fk, disabled=not _parse_ok)
-                    if _parse_ok and _new != _s["text"]:
-                        _work[i]["text"] = _new
-                        S["review_text"] = segments_to_review_text(_work)
-                        st.rerun()  # flag စာရင်း ပြန်တွက်ဖို့
-        raw = st.text_area(
-            "တစ်ကြောင်းချင်း ပြင်လို့ရတယ် — အစဉ်မပြောင်းနဲ့၊ ပုံစံမဖျက်နဲ့",
-            value=segments_to_review_text(S.translations), height=300,
-            key="review_text")
-        _bc4, _ = st.columns([1, 2])
-        with _bc4:
-            _go4 = st.button("✔️ စစ်ပြီး ဆက်ရန်", type="primary",
-                             use_container_width=True)
-        if _go4:
+    if S["wizard_step"] == 4:
+        # ---- အဆင့် ၄: review / edit
+        _spidey_card_open(4, "စာသားစစ် / ပြင်")
+        if not S.translations:
+            st.caption("အရင်ဆုံး အဆင့် ၃ မှာ ဘာသာပြန်ပါ။")
+        else:
+            # 🔍 ပြဿနာလိုင်းရှာသူ — textarea မပေါ်ခင် အရင်စစ်တာ:
+            # ဒီအစဉ်လိုက်ထားမှ quick-fix က textarea�ဲ ဒီတစ်ပတ်တည်း တိုက်ရိုက်ရေးလို့ရမယ်
+            # (widget ပေါ်ပြီးမှ session_state ပြင်ရင် Streamlit က error ထုတ်လို့)
+            _cur_raw = S.get("review_text")
+            if _cur_raw is None:
+                _cur_raw = segments_to_review_text(S.translations)
             try:
-                S.final_segments = parse_review_text(raw)
-                S.fitted, S.out_mp4, S.out_mp3 = None, None, None
-                S.recap_timeline, S.recap_report, S.out_subs = None, None, None
-                st.success(f"✅ {len(S.final_segments)} ပိုင်း အတည်ပြုပြီးပြီ")
-            except ValueError as e:
-                st.error(str(e))
+                _work = parse_review_text(_cur_raw)
+                _parse_ok = True
+            except ValueError:
+                _work = S.translations
+                _parse_ok = False
+            _flags = find_problem_lines(_work, max_speed)
+            # ရှည်တဲ့စာတွေ မပြ — တခြားဘာသာစကား/script ညှပ်ပါလာတာပဲ ပြ
+            _flags = [(i, r) for (i, r) in _flags if "စာလုံး ပါနေတယ်" in r]
+            if _flags:
+                with st.expander(
+                        f"🔍 တခြားဘာသာစကား ပါနေတဲ့လိုင်းများ ({len(_flags)})",
+                        expanded=False):
+                    st.caption("တစ်ခုချင်းနှိပ်ပြင်ရုံနဲ့ အောက်ကစာထဲ သူ့အလိုလို ဝင်သွားမယ်")
+                    if not _parse_ok:
+                        st.warning("အောက်ကစာမှာ ပုံစံမှားနေလို့ ဒီမှာ တိုက်ရိုက်ပြင်မရဘူး — "
+                                   "အရင်ပြင်လိုက်ပါ")
+                    for (i, _reason) in _flags:
+                        _s = _work[i]
+                        _fk = f"fixline_{S.run_id}_{i}"
+                        _new = st.text_input(
+                            f"#{i + 1} `{fmt_ts(_s['start'])} → {fmt_ts(_s['end'])}` — {_reason}",
+                            value=_s["text"], key=_fk, disabled=not _parse_ok)
+                        if _parse_ok and _new != _s["text"]:
+                            _work[i]["text"] = _new
+                            S["review_text"] = segments_to_review_text(_work)
+                            st.rerun()  # flag စာရင်း ပြန်တွက်ဖို့
+            raw = st.text_area(
+                "တစ်ကြောင်းချင်း ပြင်လို့ရတယ် — အစဉ်မပြောင်းနဲ့၊ ပုံစံမဖျက်နဲ့",
+                value=segments_to_review_text(S.translations), height=300,
+                key="review_text")
+            _bc4, _ = st.columns([1, 2])
+            with _bc4:
+                _go4 = st.button("✔️ စစ်ပြီး ဆက်ရန်", type="primary",
+                                 use_container_width=True)
+            if _go4:
+                try:
+                    S.final_segments = parse_review_text(raw)
+                    S.fitted, S.out_mp4, S.out_mp3 = None, None, None
+                    S.recap_timeline, S.recap_report, S.out_subs = None, None, None
+                    st.toast(f"✅ {len(S.final_segments)} ပိုင်း အတည်ပြုပြီးပြီ")
+                    S["wizard_step"] = 5
+                    st.rerun()
+                except ValueError as e:
+                    st.error(str(e))
 
-    _spidey_card_close()
+        _spidey_card_close()
 
-    # ---- အဆင့် ၅: TTS + fit
-    _spidey_card_open(5, "မြန်မာအသံထုတ် + အချိန်ချိန်")
-    if not S.final_segments:
-        st.caption("အရင်ဆုံး အဆင့် ၄ မှာ စာသားအတည်ပြုပါ။")
-    else:
-        st.caption("အသံတစ်ကြောင်းချင်းကို သူ့အချိန်ကွက်ထဲ အတိအကျထည့်မယ် — "
-                   f"ရှည်ရင် {max_speed}x အထိ မြန်ပေးမယ်၊ နောက်အပိုင်းနဲ့ ဘယ်တော့မှ မထပ်စေဘူး။")
-        _bc5, _ = st.columns([1, 2])
-        with _bc5:
-            _go5 = st.button("🔊 အသံထုတ်ရန်", type="primary",
-                             use_container_width=True)
-        if _go5:
-            work_segs = os.path.join(WORK_DIR, S.run_id, "segs")
-            prog = st.progress(0.0)
-            curlbl = st.empty()
-            def cb(f, i, t):
-                prog.progress(f)
-                curlbl.text(f"အပိုင်း {i + 1}/{len(S.final_segments)}: {t}")
-            S.auto_shortened = False
-            fitted, report = tts_and_fit(S.final_segments, voice, max_speed,
-                                         work_segs, progress_cb=cb)
-            # စာရှည်လို့ အချိန်ကွက်ထဲ မဝင်တဲ့လိုင်းတွေ → Gemini နဲ့ အလိုအလျောက်တိုပေး
-            if auto_shorten and report["overflow"] and api_key:
-                items = [{"id": i, "text": t,
-                          "target_chars": max(4, int(len(t) / ratio * 1.15))}
-                         for (i, _s, _e, t, ratio) in report["overflow"]]
-                with st.status("✂️ Gemini နဲ့ စာရှည်တဲ့လိုင်းတွေ တိုအောင်ပြင်နေတယ်...",
-                               expanded=False):
-                    short = gemini_shorten(api_key,
-                                           model_id.strip() or GEMINI_MODEL_DEFAULT,
-                                           items, glossary=glossary)
-                applied = 0
-                for (i, _s, _e, t, _r) in report["overflow"]:
-                    if i in short and short[i] != t:
-                        S.final_segments[i]["text"] = short[i]
-                        applied += 1
-                if applied:
-                    # တိုထားတဲ့စာသားနဲ့ အသံပြန်ထုတ် (တစ်ကြိမ်သာ — cache ကြောင့်
-                    # မပြောင်းတဲ့လိုင်းတွေ အသံပြန်ထုတ်စရာ မလိုဘူး)
-                    fitted, report = tts_and_fit(S.final_segments, voice, max_speed,
-                                                 work_segs, progress_cb=cb)
-                    S.auto_shortened = True
-                    st.info(f"✂️ Gemini က {applied} လိုင်း တိုအောင်ပြင်ပြီးပြီ — "
-                            "အသံပြန်ထုတ်ထားတယ်")
-            S.fitted, S.fit_report, S.out_mp4, S.out_mp3 = fitted, report, None, None
-            S.recap_timeline, S.recap_report, S.out_subs = None, None, None
-            prog.empty(); curlbl.empty()
-            st.success(f"✅ အပိုင်း {len(fitted)} ပိုင်း အသံထွက်ပြီးပြီ")
-    _spidey_card_close()
-
-    # ---- အဆင့် ၆: assemble + download
-    _spidey_card_open(6, "ဗီဒီယိုနဲ့ပေါင်း + Download"
-                      if is_video else "အသံဖိုင် Download")
-    # recap render မုဒ်ဆို အဆင့် ၅ (fit) မလိုဘူး — သဘာဝအသံကနေ တိုက်ရိုက်တွက်မယ်
-    _can_render = bool(S.fitted) or (recap_render and bool(S.final_segments))
-    if not _can_render:
-        st.caption("အရင်ဆုံး အဆင့် ၅ မှာ အသံထုတ်ပါ။")
-    else:
-        if is_video:
-            _bc6, _ = st.columns([1, 2])
-            with _bc6:
-                _go6 = st.button(
-                    "🎞️ Recap render (video ချိန် + ပေါင်း)" if recap_render
-                    else "🎬 မူရင်းဗီဒီယိုနဲ့ ပေါင်းရန်",
-                    type="primary", use_container_width=True)
-            if _go6:
-                work_asm = os.path.join(WORK_DIR, S.run_id, "asm")
-                dubbed = os.path.join(WORK_DIR, S.run_id, "dubbed_audio.mp3")
-                out = os.path.join(WORK_DIR, S.run_id, "dubbed_video.mp4")
-                with st.status("အသံဆက် + ဗီဒီယိုနဲ့ပေါင်းနေတယ်...", expanded=False):
-                    if recap_render and S.final_segments and S.video_path:
-                        # 🎞️ recap render: သဘာဝအသံထုတ် → video ချိန် → mux
-                        work_nat = os.path.join(WORK_DIR, S.run_id, "natural")
-                        _pn = st.progress(0.0, "Recap အသံ သဘာဝအတိုင်းထုတ်နေတယ်...")
-                        natural, _failed_n = tts_natural(
-                            S.final_segments, voice, work_nat,
-                            progress_cb=lambda f, i, t: _pn.progress(f))
-                        _pn.empty()
-                        if _failed_n:
-                            st.warning(f"🔇 အသံထုတ်မရတဲ့အပိုင်း {len(_failed_n)} ခု "
-                                       "ကျော်သွားမယ်")
-                        work_rc = os.path.join(WORK_DIR, S.run_id, "recap")
-                        _tmp_out = os.path.join(work_rc, "recap_video.mp4")
-                        _, S.recap_timeline, S.recap_report = render_recap_video(
-                            S.video_path, natural, S.duration, work_rc, _tmp_out)
-                        _stage = _tmp_out
-                        _subs = [dict(s) for s in S.recap_timeline]
-                        _extreme = [(i, f) for (i, f, _n) in (S.recap_report or [])
-                                    if f < 0.5 or f > 2.0]
-                        if _extreme:
-                            st.info("🎞️ Video အမြန်/အနှေးချိန်ထားတာ: " +
-                                    ", ".join(f"#{i + 1} x{f:.2f}"
-                                              for i, f in _extreme[:10]) +
-                                    ("…" if len(_extreme) > 10 else ""))
-                    else:
-                        assemble_dubbed(S.fitted, S.duration, work_asm, dubbed)
-                        _final_audio = dubbed
-                        mux_video(S.video_path, _final_audio, out)
-                        S.recap_timeline, S.recap_report, S.out_subs = None, None, None
-                        _stage = out
-                        _subs = [dict(s) for s in S.final_segments]
-                    # ⚡ speed-up (download မချခင် — video+audio အတူ, sync မပျက်)
-                    if speedup > 1.0:
-                        _spd = os.path.join(WORK_DIR, S.run_id, "spedup.mp4")
-                        speedup_video(_stage, speedup, _spd)
-                        _stage = _spd
-                        _subs = [{"start": s["start"] / speedup,
-                                  "end": s["end"] / speedup,
-                                  "text": s["text"]} for s in _subs]
-                    if _stage != out:
-                        shutil.copyfile(_stage, out)
-                    S.out_subs = _subs
-                S.out_mp4 = out
-                st.success("✅ ပြီးပြီ! အောက်မှာ download ချလို့ရပြီ")
+    if S["wizard_step"] == 5:
+        # ---- အဆင့် ၅: TTS + fit
+        _spidey_card_open(5, "မြန်မာအသံထုတ် + အချိန်ချိန်")
+        if not S.final_segments:
+            st.caption("အရင်ဆုံး အဆင့် ၄ မှာ စာသားအတည်ပြုပါ။")
         else:
-            _bc6s, _ = st.columns([1, 2])
-            with _bc6s:
-                _go6s = st.button("🎧 အသံဖိုင်ထုတ်ရန်", type="primary",
-                                  use_container_width=True)
-            if _go6s:
-                work_asm = os.path.join(WORK_DIR, S.run_id, "asm")
-                out = os.path.join(WORK_DIR, S.run_id, "dubbed_voiceover.mp3")
-                with st.status("အသံဆက်နေတယ်...", expanded=False):
-                    assemble_dubbed(S.fitted, S.duration, work_asm, out)
-                S.out_mp3 = out
-                st.success("✅ ပြီးပြီ! အောက်မှာ download ချလို့ရပြီ")
-        _has_out = ((S.out_mp4 and os.path.isfile(S.out_mp4)) or
-                    (S.out_mp3 and os.path.isfile(S.out_mp3)))
-        if _has_out or S.final_segments:
-            # ဖိုင်အသစ်တင်တိုင်း အမည်အကြံကို refresh (ရိုက်ထားတာကို မဖျက်)
-            if S.get("_dl_for") != S.run_id:
-                _base = (S.get("dl_base") or "audio").strip() or "audio"
-                S["dl_name"] = f"{_base}_dubbed"
-                S["_dl_for"] = S.run_id
-            st.text_input("📝 ဖိုင်နာမည်", key="dl_name",
-                          help="download ချမယ့်အမည် — .mp4/.mp3/.srt ကို သူ့အလိုလို ထည့်ပေးမယ်")
-            _dl = re.sub(r'[\\/:*?"<>|]', "_", (S.get("dl_name") or "").strip())
-            if not _dl:
-                _dl = "dubbed"
-        st.markdown('<div class="spidey-dl-label">📥 ရလာဒ်များ</div>',
-                    unsafe_allow_html=True)
-        _dc = st.columns(3)
-        _di = 0
-        if S.out_mp4 and os.path.isfile(S.out_mp4):
-            with _dc[_di], open(S.out_mp4, "rb") as f:
-                st.download_button("⬇️ Dubbed MP4", f, file_name=f"{_dl}.mp4",
-                                   mime="video/mp4", type="primary",
-                                   use_container_width=True)
-            _di += 1
-        if S.out_mp3 and os.path.isfile(S.out_mp3):
-            with _dc[_di], open(S.out_mp3, "rb") as f:
-                st.download_button("⬇️ Dubbed MP3", f, file_name=f"{_dl}.mp3",
-                                   mime="audio/mpeg", type="primary",
-                                   use_container_width=True)
-            _di += 1
-        if S.final_segments:
-            with _dc[_di]:
-                # render မှာ သုံးတဲ့ timeline အတိုင်း (speedup ပါရင် ချိန်ပြီးသား)
-                _srt_segs = S.out_subs or S.recap_timeline or S.final_segments
-                st.download_button("⬇️ SRT", segments_to_srt(_srt_segs),
-                                   file_name=f"{_dl}.srt", mime="text/plain",
-                                   use_container_width=True)
-    _spidey_card_close()
+            st.caption("အသံတစ်ကြောင်းချင်းကို သူ့အချိန်ကွက်ထဲ အတိအကျထည့်မယ် — "
+                       f"ရှည်ရင် {max_speed}x အထိ မြန်ပေးမယ်၊ နောက်အပိုင်းနဲ့ ဘယ်တော့မှ မထပ်စေဘူး။")
+            _bc5, _ = st.columns([1, 2])
+            with _bc5:
+                _go5 = st.button("🔊 အသံထုတ်ရန်", type="primary",
+                                 use_container_width=True)
+            if _go5:
+                work_segs = os.path.join(WORK_DIR, S.run_id, "segs")
+                prog = st.progress(0.0)
+                curlbl = st.empty()
+                def cb(f, i, t):
+                    prog.progress(f)
+                    curlbl.text(f"အပိုင်း {i + 1}/{len(S.final_segments)}: {t}")
+                S.auto_shortened = False
+                fitted, report = tts_and_fit(S.final_segments, voice, max_speed,
+                                             work_segs, progress_cb=cb)
+                # စာရှည်လို့ အချိန်ကွက်ထဲ မဝင်တဲ့လိုင်းတွေ → Gemini နဲ့ အလိုအလျောက်တိုပေး
+                if auto_shorten and report["overflow"] and api_key:
+                    items = [{"id": i, "text": t,
+                              "target_chars": max(4, int(len(t) / ratio * 1.15))}
+                             for (i, _s, _e, t, ratio) in report["overflow"]]
+                    with st.status("✂️ Gemini နဲ့ စာရှည်တဲ့လိုင်းတွေ တိုအောင်ပြင်နေတယ်...",
+                                   expanded=False):
+                        short = gemini_shorten(api_key,
+                                               model_id.strip() or GEMINI_MODEL_DEFAULT,
+                                               items, glossary=glossary)
+                    applied = 0
+                    for (i, _s, _e, t, _r) in report["overflow"]:
+                        if i in short and short[i] != t:
+                            S.final_segments[i]["text"] = short[i]
+                            applied += 1
+                    if applied:
+                        # တိုထားတဲ့စာသားနဲ့ အသံပြန်ထုတ် (တစ်ကြိမ်သာ — cache ကြောင့်
+                        # မပြောင်းတဲ့လိုင်းတွေ အသံပြန်ထုတ်စရာ မလိုဘူး)
+                        fitted, report = tts_and_fit(S.final_segments, voice, max_speed,
+                                                     work_segs, progress_cb=cb)
+                        S.auto_shortened = True
+                        st.info(f"✂️ Gemini က {applied} လိုင်း တိုအောင်ပြင်ပြီးပြီ — "
+                                "အသံပြန်ထုတ်ထားတယ်")
+                S.fitted, S.fit_report, S.out_mp4, S.out_mp3 = fitted, report, None, None
+                S.recap_timeline, S.recap_report, S.out_subs = None, None, None
+                prog.empty(); curlbl.empty()
+                st.toast(f"✅ အပိုင်း {len(fitted)} ပိုင်း အသံထွက်ပြီးပြီ")
+                S["wizard_step"] = 6
+                st.rerun()
+        _spidey_card_close()
+
+    if S["wizard_step"] == 6:
+        # ---- အဆင့် ၆: assemble + download
+        _spidey_card_open(6, "ဗီဒီယိုနဲ့ပေါင်း + Download"
+                          if is_video else "အသံဖိုင် Download")
+        # recap render မုဒ်ဆို အဆင့် ၅ (fit) မလိုဘူး — သဘာဝအသံကနေ တိုက်ရိုက်တွက်မယ်
+        _can_render = bool(S.fitted) or (recap_render and bool(S.final_segments))
+        if not _can_render:
+            st.caption("အရင်ဆုံး အဆင့် ၅ မှာ အသံထုတ်ပါ။")
+        else:
+            if is_video:
+                _bc6, _ = st.columns([1, 2])
+                with _bc6:
+                    _go6 = st.button(
+                        "🎞️ Recap render (video ချိန် + ပေါင်း)" if recap_render
+                        else "🎬 မူရင်းဗီဒီယိုနဲ့ ပေါင်းရန်",
+                        type="primary", use_container_width=True)
+                if _go6:
+                    work_asm = os.path.join(WORK_DIR, S.run_id, "asm")
+                    dubbed = os.path.join(WORK_DIR, S.run_id, "dubbed_audio.mp3")
+                    out = os.path.join(WORK_DIR, S.run_id, "dubbed_video.mp4")
+                    with st.status("အသံဆက် + ဗီဒီယိုနဲ့ပေါင်းနေတယ်...", expanded=False):
+                        if recap_render and S.final_segments and S.video_path:
+                            # 🎞️ recap render: သဘာဝအသံထုတ် → video ချိန် → mux
+                            work_nat = os.path.join(WORK_DIR, S.run_id, "natural")
+                            _pn = st.progress(0.0, "Recap အသံ သဘာဝအတိုင်းထုတ်နေတယ်...")
+                            natural, _failed_n = tts_natural(
+                                S.final_segments, voice, work_nat,
+                                progress_cb=lambda f, i, t: _pn.progress(f))
+                            _pn.empty()
+                            if _failed_n:
+                                st.warning(f"🔇 အသံထုတ်မရတဲ့အပိုင်း {len(_failed_n)} ခု "
+                                           "ကျော်သွားမယ်")
+                            work_rc = os.path.join(WORK_DIR, S.run_id, "recap")
+                            _tmp_out = os.path.join(work_rc, "recap_video.mp4")
+                            _, S.recap_timeline, S.recap_report = render_recap_video(
+                                S.video_path, natural, S.duration, work_rc, _tmp_out)
+                            _stage = _tmp_out
+                            _subs = [dict(s) for s in S.recap_timeline]
+                            _extreme = [(i, f) for (i, f, _n) in (S.recap_report or [])
+                                        if f < 0.5 or f > 2.0]
+                            if _extreme:
+                                st.info("🎞️ Video အမြန်/အနှေးချိန်ထားတာ: " +
+                                        ", ".join(f"#{i + 1} x{f:.2f}"
+                                                  for i, f in _extreme[:10]) +
+                                        ("…" if len(_extreme) > 10 else ""))
+                        else:
+                            assemble_dubbed(S.fitted, S.duration, work_asm, dubbed)
+                            _final_audio = dubbed
+                            mux_video(S.video_path, _final_audio, out)
+                            S.recap_timeline, S.recap_report, S.out_subs = None, None, None
+                            _stage = out
+                            _subs = [dict(s) for s in S.final_segments]
+                        # ⚡ speed-up (download မချခင် — video+audio အတူ, sync မပျက်)
+                        if speedup > 1.0:
+                            _spd = os.path.join(WORK_DIR, S.run_id, "spedup.mp4")
+                            speedup_video(_stage, speedup, _spd)
+                            _stage = _spd
+                            _subs = [{"start": s["start"] / speedup,
+                                      "end": s["end"] / speedup,
+                                      "text": s["text"]} for s in _subs]
+                        if _stage != out:
+                            shutil.copyfile(_stage, out)
+                        S.out_subs = _subs
+                    S.out_mp4 = out
+                    st.success("✅ ပြီးပြီ! အောက်မှာ download ချလို့ရပြီ")
+            else:
+                _bc6s, _ = st.columns([1, 2])
+                with _bc6s:
+                    _go6s = st.button("🎧 အသံဖိုင်ထုတ်ရန်", type="primary",
+                                      use_container_width=True)
+                if _go6s:
+                    work_asm = os.path.join(WORK_DIR, S.run_id, "asm")
+                    out = os.path.join(WORK_DIR, S.run_id, "dubbed_voiceover.mp3")
+                    with st.status("အသံဆက်နေတယ်...", expanded=False):
+                        assemble_dubbed(S.fitted, S.duration, work_asm, out)
+                    S.out_mp3 = out
+                    st.success("✅ ပြီးပြီ! အောက်မှာ download ချလို့ရပြီ")
+            _has_out = ((S.out_mp4 and os.path.isfile(S.out_mp4)) or
+                        (S.out_mp3 and os.path.isfile(S.out_mp3)))
+            if _has_out or S.final_segments:
+                # ဖိုင်အသစ်တင်တိုင်း အမည်အကြံကို refresh (ရိုက်ထားတာကို မဖျက်)
+                if S.get("_dl_for") != S.run_id:
+                    _base = (S.get("dl_base") or "audio").strip() or "audio"
+                    S["dl_name"] = f"{_base}_dubbed"
+                    S["_dl_for"] = S.run_id
+                st.text_input("📝 ဖိုင်နာမည်", key="dl_name",
+                              help="download ချမယ့်အမည် — .mp4/.mp3/.srt ကို သူ့အလိုလို ထည့်ပေးမယ်")
+                _dl = re.sub(r'[\\/:*?"<>|]', "_", (S.get("dl_name") or "").strip())
+                if not _dl:
+                    _dl = "dubbed"
+            st.markdown('<div class="spidey-dl-label">📥 ရလာဒ်များ</div>',
+                        unsafe_allow_html=True)
+            _dc = st.columns(3)
+            _di = 0
+            if S.out_mp4 and os.path.isfile(S.out_mp4):
+                with _dc[_di], open(S.out_mp4, "rb") as f:
+                    st.download_button("⬇️ Dubbed MP4", f, file_name=f"{_dl}.mp4",
+                                       mime="video/mp4", type="primary",
+                                       use_container_width=True)
+                _di += 1
+            if S.out_mp3 and os.path.isfile(S.out_mp3):
+                with _dc[_di], open(S.out_mp3, "rb") as f:
+                    st.download_button("⬇️ Dubbed MP3", f, file_name=f"{_dl}.mp3",
+                                       mime="audio/mpeg", type="primary",
+                                       use_container_width=True)
+                _di += 1
+            if S.final_segments:
+                with _dc[_di]:
+                    # render မှာ သုံးတဲ့ timeline အတိုင်း (speedup ပါရင် ချိန်ပြီးသား)
+                    _srt_segs = S.out_subs or S.recap_timeline or S.final_segments
+                    st.download_button("⬇️ SRT", segments_to_srt(_srt_segs),
+                                       file_name=f"{_dl}.srt", mime="text/plain",
+                                       use_container_width=True)
+        _spidey_card_close()
+    # ---- wizard အောက် nav (Next/Back)
+    _wn1, _wn2, _wn3 = st.columns([1, 2, 1])
+    _cur = max(1, min(6, int(S.get("wizard_step", 1))))
+    with _wn1:
+        if _cur > 1 and st.button("◀️ ပြန်သွား", key="wiz_back",
+                                  use_container_width=True):
+            S["wizard_step"] = _cur - 1
+            st.rerun()
+    with _wn2:
+        st.caption(f"အဆင့် {_cur} / 6")
+    with _wn3:
+        if _cur < 6 and st.button("ဆက်သွား ▶️", key="wiz_next",
+                                  type="primary", use_container_width=True):
+            S["wizard_step"] = _cur + 1
+            st.rerun()
     st.markdown(
         '<div class="spidey-foot">🕷️ Audio Dub Studio — '
         "your friendly neighborhood dubbing tool 🕸️</div>",
