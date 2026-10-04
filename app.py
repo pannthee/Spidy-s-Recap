@@ -199,12 +199,13 @@ div[data-testid="stHorizontalBlock"]:has(> :nth-child(6):last-child) button {
     padding-left: 0.2rem !important;
     padding-right: 0.2rem !important;
 }
-/* wizard bottom nav (.wiz-bnav marker နောက်က row): ခလုတ် ၂ ခု ဘေးချင်းကပ် */
-div:has(> .wiz-bnav) ~ div div[data-testid="stHorizontalBlock"] {
+/* wizard bottom nav: ခလုတ် ၂ ခု ဘေးချင်းကပ် (marker က ပထမကော်လံထဲ) */
+.wiz-bnav-col { display: none; }
+div[data-testid="stHorizontalBlock"]:has(.wiz-bnav-col) {
     flex-wrap: nowrap !important;
     gap: 0.5rem !important;
 }
-div:has(> .wiz-bnav) ~ div div[data-testid="stHorizontalBlock"] > div {
+div[data-testid="stHorizontalBlock"]:has(.wiz-bnav-col) > div {
     min-width: 0 !important;
 }
 </style>""",
@@ -2089,12 +2090,13 @@ def main():
     # ---- wizard အောက် nav: စာအပေါ်, ခလုတ် ၂ ခု ဘေးချင်းကပ်
     _cur = max(1, min(6, int(S.get("wizard_step", 1))))
     st.caption(f"အဆင့် {_cur} / 6")
-    st.markdown('<div class="wiz-bnav"></div>', unsafe_allow_html=True)
     _show_back = _cur > 1
     _show_next = _cur < 6
     if _show_back and _show_next:
         _b1, _b2 = st.columns(2)
         with _b1:
+            st.markdown('<div class="wiz-bnav-col"></div>',
+                        unsafe_allow_html=True)
             if st.button("◀️ ပြန်သွား", key="wiz_back",
                          use_container_width=True):
                 S["wizard_step"] = _cur - 1
