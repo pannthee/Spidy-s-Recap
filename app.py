@@ -48,6 +48,7 @@ import shutil
 import subprocess
 import sys
 import uuid
+from PIL import Image, ImageDraw
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 CACHE_TTS = os.path.join(APP_DIR, "cache_tts")
@@ -1211,8 +1212,13 @@ def _ass_ts(sec):
     return f"{h}:{m:02d}:{s:05.2f}"
 
 
-def segments_to_ass(segments, font_name="Noto Sans Myanmar", font_size=56):
-    """segments → ASS စာသား (1080p recap စတိုင်: အဖြူ+အနက်ဘောင်, အောက်အလယ်)."""
+def segments_to_ass(segments, font_name="Noto Sans Myanmar", font_size=56,
+                     alignment=2, margin_v=90):
+    """segments → ASS စာသား (1080p recap စတိုင်: အဖြူ+အနက်ဘောင်).
+
+    alignment: 2=အောက်အလယ်, 8=အပေါ်အလယ် (edit tool က ရွေး).
+    margin_v: အနားသတ် (px, PlayRes 1080 အတိုင်း).
+    """
     head = (
         "[Script Info]\nScriptType: v4.00+\nPlayResX: 1920\nPlayResY: 1080\n"
         "WrapStyle: 2\nScaledBorderAndShadow: yes\n\n"
@@ -1222,7 +1228,7 @@ def segments_to_ass(segments, font_name="Noto Sans Myanmar", font_size=56):
         "ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, "
         "MarginR, MarginV, Encoding\n"
         f"Style: Recap,{font_name},{font_size},&H00FFFFFF,&H000019FF,&H00000000,"
-        f"&H80000000,-1,0,0,0,100,100,0,0,1,3,0,2,40,40,90,1\n\n"
+        f"&H80000000,-1,0,0,0,100,100,0,0,1,3,0,{alignment},40,40,{margin_v},1\n\n"
         "[Events]\n"
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
     )
@@ -1246,6 +1252,71 @@ def burn_subtitles(video_in, ass_path, out_mp4):
     vf += f":fontsdir='{fd}'"
     run(["ffmpeg", "-y", "-v", "error", "-i", video_in,
          "-vf", vf, "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
+         "-c:a", "copy", "-movflags", "+faststart", out_mp4])
+    return out_mp4
+
+
+def _video_size(path):
+    """video ရဲ့ (width, height)."""
+    try:
+        r = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "v:0",
+             "-show_entries", "stream=width,height", "-of", "csv=p=0", path],
+            capture_output=True, text=True, timeout=15)
+        w, h = r.stdout.strip().split(",")
+        return int(w), int(h)
+    except Exception:
+        return 1280, 720
+
+
+def extract_frame(video_path, at_sec, out_jpg):
+    """နမူနာ frame တစ်ပုံ ထုတ် (edit tool preview အတွက်)."""
+    run(["ffmpeg", "-y", "-v", "error", "-ss", f"{max(0.0, at_sec):.2f}",
+         "-i", video_path, "-frames:v", "1", "-q:v", "4", out_jpg])
+    return out_jpg
+
+
+def apply_edits(video_in, out_mp4, blur_boxes=None, logo=None):
+    """🎨 Edit tool: blur box တွေ + logo overlay (audio က copy).
+
+    blur_boxes: [{"x","y","w","h"} — 0~1 fraction] (အဟောင်း hardcoded sub ဖုံး).
+    logo: {"path", "corner": "top-left"|"top-right"|"bottom-left"|"bottom-right",
+           "scale": video width ရဲ့ fraction}.
+    ဘာမှမပါရင် copy သက်သက်.
+    """
+    blur_boxes = [b for b in (blur_boxes or [])
+                  if b.get("w", 0) > 0.005 and b.get("h", 0) > 0.005]
+    _logo_ok = bool(logo and logo.get("path") and os.path.isfile(logo["path"]))
+    if not blur_boxes and not _logo_ok:
+        shutil.copyfile(video_in, out_mp4)
+        return out_mp4
+    W, H = _video_size(video_in)
+    filters, cur = [], "0:v"
+    for i, b in enumerate(blur_boxes):
+        x = max(0, min(int(b["x"] * W), W - 2))
+        y = max(0, min(int(b["y"] * H), H - 2))
+        w = max(2, min(int(b["w"] * W), W - x))
+        h = max(2, min(int(b["h"] * H), H - y))
+        filters.append(f"[{cur}]crop={w}:{h}:{x}:{y},boxblur=15:2[eb{i}]")
+        filters.append(f"[{cur}][eb{i}]overlay={x}:{y}[ex{i}]")
+        cur = f"ex{i}"
+    if _logo_ok:
+        lp = logo["path"].replace("\\", "/").replace(
+            ":", "\\:").replace("'", "\\'")
+        lw = max(8, int(W * float(logo.get("scale", 0.12))))
+        filters.append(f"movie='{lp}',scale={lw}:-1[lg]")
+        _pos = {"top-left": "20:20",
+                "top-right": "W-w-20:20",
+                "bottom-left": "20:H-h-20",
+                "bottom-right": "W-w-20:H-h-20"}.get(
+                    logo.get("corner", "top-right"), "W-w-20:20")
+        filters.append(f"[{cur}][lg]overlay={_pos}:format=auto[vout]")
+    else:
+        filters.append(f"[{cur}]null[vout]")
+    run(["ffmpeg", "-y", "-v", "error", "-i", video_in,
+         "-filter_complex", ";".join(filters),
+         "-map", "[vout]", "-map", "0:a?",
+         "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
          "-c:a", "copy", "-movflags", "+faststart", out_mp4])
     return out_mp4
 
@@ -1388,6 +1459,7 @@ def _init_state(st):
         "scenes": None, "scene_descs": None,
         "recap_timeline": None, "recap_report": None,
         "out_subs": None,
+        "edit_boxes": [],
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -1536,6 +1608,12 @@ def main():
                             help="Download မချခင် video ကို အမြန်ပေးမယ် "
                                  "(video+audio အတူ, sync မပျက်) — 1.0 = မူရင်းအတိုင်း, "
                                  "1.2 = 20% မြန်။ Recap render နှေးနေရင် ဒီမှာ တင်လို့ရတယ်")
+        st.markdown("##### 🎨 Edit Tool")
+        edit_tool = st.checkbox(
+            "🎨 Edit tool (blur / sub နေရာ / logo)", value=False,
+            help="အဟောင်း hardcoded စာတန်းထိုးတွေကို blur နဲ့ဖုံး၊ စာတန်းထိုးနေရာရွေး၊ "
+                 "logo ထည့်မယ် — အဆင့် ၆ မှာ preview နဲ့ ပြင်လို့ရမယ်။ "
+                 "ပိတ်ထားရင် အရင်အတိုင်း")
         st.markdown("##### 📖 နာမည်စာရင်း (Glossary)")
         glossary_raw = st.text_area(
             "ဇာတ်ကောင်နာမည်တွေ — တစ်ကြောင်းတစ်ခု",
@@ -2020,6 +2098,106 @@ def main():
                     "🎞️ Recap render (video ချိန် + ပေါင်း)" if recap_render
                     else "🎬 မူရင်းဗီဒီယိုနဲ့ ပေါင်းရန်",
                     type="primary", use_container_width=True)
+            # 🎨 Edit tool — render မလုပ်ခင် preview နဲ့ ပြင်
+            if edit_tool and S.get("video_path") and os.path.isfile(S.video_path):
+                with st.expander("🎨 Edit Tool — blur / စာတန်းနေရာ / logo",
+                                 expanded=False):
+                    _vdur = max(1.0, float(S.get("duration") or 10))
+                    _ft = st.slider("နမူနာ frame (စက္ကန့်)", 0.0, _vdur,
+                                    min(5.0, _vdur), 0.5,
+                                    help="အဟောင်း sub ပေါ်နေတဲ့အချိန်ကို ရွေး")
+                    _fr = os.path.join(WORK_DIR, S.run_id or "tmp",
+                                        f"edit_frame_{_ft:.1f}.jpg")
+                    if not os.path.isfile(_fr):
+                        try:
+                            extract_frame(S.video_path, _ft, _fr)
+                        except Exception as _e:
+                            st.warning(f"frame ထုတ်မရဘူး: {_e}")
+                            _fr = None
+                    st.markdown("**📦 Blur box — အဟောင်း sub ဖုံးမယ့်နေရာ**")
+                    if st.button("📦 အောက်ခြေ စာတန်းနေရာ (default) ထည့်",
+                                 help="အောက်ခြေ 22% ကို ဖုံးမယ့် box"):
+                        S["edit_boxes"].append(
+                            {"x": 0.05, "y": 0.76, "w": 0.90, "h": 0.22})
+                    _eb_c1, _eb_c2, _eb_c3, _eb_c4 = st.columns(4)
+                    with _eb_c1:
+                        _nbx = st.slider("x %", 0, 95, 5, key="ebx_x")
+                    with _eb_c2:
+                        _nby = st.slider("y %", 0, 95, 70, key="ebx_y")
+                    with _eb_c3:
+                        _nbw = st.slider("အကျယ် %", 5, 100, 90, key="ebx_w")
+                    with _eb_c4:
+                        _nbh = st.slider("အမြင့် %", 5, 100, 22, key="ebx_h")
+                    if st.button("➕ Box ထည့်"):
+                        S["edit_boxes"].append(
+                            {"x": _nbx / 100, "y": _nby / 100,
+                             "w": _nbw / 100, "h": _nbh / 100})
+                    for _bi, _b in enumerate(list(S["edit_boxes"])):
+                        _ebc1, _ebc2 = st.columns([4, 1])
+                        with _ebc1:
+                            st.caption(f"Box {_bi + 1}: x={_b['x']:.0%}, "
+                                       f"y={_b['y']:.0%}, w={_b['w']:.0%}, "
+                                       f"h={_b['h']:.0%}")
+                        with _ebc2:
+                            if st.button("❌", key=f"eb_del_{_bi}"):
+                                S["edit_boxes"].pop(_bi)
+                                st.rerun()
+                    st.markdown("**💬 စာတန်းထိုးနေရာ**")
+                    st.radio("နေရာ", ["အောက်", "အပေါ်"], horizontal=True,
+                             key="edit_sub_pos",
+                             help="🔥 burn-in ဖွင့်ထားမှ အကျိုးသက်ရောက်မယ်")
+                    st.slider("အနားသတ်", 20, 250, 90, key="edit_sub_margin",
+                              help="စာတန်းထိုးနဲ့ အနားကြား အကွာအဝေး")
+                    st.markdown("**🖼️ Logo**")
+                    _lg_up = st.file_uploader("Logo ပုံ (PNG အကြံပြု)",
+                                              type=["png", "jpg", "jpeg"],
+                                              key="edit_logo_up")
+                    if _lg_up is not None:
+                        _lg_p = os.path.join(WORK_DIR, S.run_id or "tmp",
+                                              "edit_logo.png")
+                        with open(_lg_p, "wb") as _lf:
+                            _lf.write(_lg_up.getbuffer())
+                        S["edit_logo_path"] = _lg_p
+                    if S.get("edit_logo_path") and os.path.isfile(
+                            S["edit_logo_path"]):
+                        st.caption("✅ logo ရှိတယ်")
+                        if st.button("🗑️ logo ဖျက်"):
+                            try:
+                                os.remove(S["edit_logo_path"])
+                            except Exception:
+                                pass
+                            S["edit_logo_path"] = None
+                            st.rerun()
+                    st.selectbox("Logo နေရာ",
+                                 ["အပေါ်-ညာ", "အပေါ်-ဘယ်",
+                                  "အောက်-ညာ", "အောက်-ဘယ်"],
+                                 key="edit_logo_corner")
+                    st.slider("Logo အရွယ် (video အကျယ်ရဲ့ %)", 5, 30, 12,
+                              key="edit_logo_scale")
+                    if _fr and os.path.isfile(_fr):
+                        try:
+                            _im = Image.open(_fr).convert("RGB")
+                            _W, _H = _im.size
+                            _dr = ImageDraw.Draw(_im, "RGBA")
+                            for _b in S["edit_boxes"]:
+                                _x0 = int(_b["x"] * _W)
+                                _y0 = int(_b["y"] * _H)
+                                _dr.rectangle(
+                                    [_x0, _y0, _x0 + int(_b["w"] * _W),
+                                     _y0 + int(_b["h"] * _H)],
+                                    fill=(255, 0, 0, 70),
+                                    outline=(255, 0, 0), width=4)
+                            if S.get("edit_sub_pos", "အောက်") == "အပေါ်":
+                                _dr.rectangle([0, 0, _W, int(_H * 0.25)],
+                                              fill=(0, 200, 0, 50))
+                            else:
+                                _dr.rectangle([0, int(_H * 0.75), _W, _H],
+                                              fill=(0, 200, 0, 50))
+                            st.image(_im,
+                                     caption="🔴 = blur box, 🟢 = စာတန်းထိုးနေရာ",
+                                     use_container_width=True)
+                        except Exception as _e:
+                            st.warning(f"preview ပြမရဘူး: {_e}")
             if _go6:
                 work_asm = os.path.join(WORK_DIR, S.run_id, "asm")
                 dubbed = os.path.join(WORK_DIR, S.run_id, "dubbed_audio.mp3")
@@ -2064,11 +2242,38 @@ def main():
                         _subs = [{"start": s["start"] / speedup,
                                   "end": s["end"] / speedup,
                                   "text": s["text"]} for s in _subs]
-                    # 🔥 burn-in (speedup ပြီးမှ — timing ကိုက်အောင်)
+                    # 🎨 edit tool: blur + logo (speedup ပြီးမှ, burn-in မတိုင်ခင်)
+                    if edit_tool:
+                        _eboxes = list(S.get("edit_boxes") or [])
+                        _elogo = None
+                        if S.get("edit_logo_path") and os.path.isfile(
+                                S["edit_logo_path"]):
+                            _elogo = {
+                                "path": S["edit_logo_path"],
+                                "corner": {
+                                    "အပေါ်-ညာ": "top-right",
+                                    "အပေါ်-ဘယ်": "top-left",
+                                    "အောက်-ညာ": "bottom-right",
+                                    "အောက်-ဘယ်": "bottom-left"}.get(
+                                        S.get("edit_logo_corner", "အပေါ်-ညာ"),
+                                        "top-right"),
+                                "scale": float(S.get("edit_logo_scale", 12)) / 100,
+                            }
+                        if _eboxes or _elogo:
+                            _edt = os.path.join(WORK_DIR, S.run_id, "edited.mp4")
+                            apply_edits(_stage, _edt,
+                                        blur_boxes=_eboxes, logo=_elogo)
+                            _stage = _edt
+                    # 🔥 burn-in (speedup/edit ပြီးမှ — timing ကိုက်အောင်)
                     if burn_subs:
                         _ass_p = os.path.join(WORK_DIR, S.run_id, "burn_subs.ass")
+                        _al = (8 if (edit_tool and
+                                      S.get("edit_sub_pos", "အောက်") == "အပေါ်")
+                               else 2)
+                        _mv = int(S.get("edit_sub_margin", 90)) if edit_tool else 90
                         with open(_ass_p, "w", encoding="utf-8") as _fh:
-                            _fh.write(segments_to_ass(_subs))
+                            _fh.write(segments_to_ass(
+                                _subs, alignment=_al, margin_v=_mv))
                         burn_subtitles(_stage, _ass_p, out)
                     elif _stage != out:
                         shutil.copyfile(_stage, out)
