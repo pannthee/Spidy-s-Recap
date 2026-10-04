@@ -9,6 +9,8 @@
 
 1. MP4 တင် → ffmpeg နဲ့ audio ထုတ် (mp3 16k mono 32k — Groq 25MB ကန့်သတ်ချက်နဲ့ကိုက်အောင်)
 2. **Groq Whisper API** (`whisper-large-v3-turbo`) နဲ့ စကားပြော → စာသား + timestamp ထုတ်
+   (Groq က 403 IP-block ထိရင် **AssemblyAI** နဲ့ အလိုအလျောက် fallback —
+   sidebar မှာ AssemblyAI key ထည့်၊ toggle ဖွင့်ထား)
 3. Gemini (`gemini-3.5-flash-lite`) နဲ့ သဘာဝကျတဲ့ ပြောစကားမြန်မာလို ဘာသာပြန်
 4. စာသားကို ပြန်စစ် / ပြင် (တစ်ကြောင်းချင်း)
 5. edge-tts `my-MM-ThihaNeural` (ကျားအသံ) နဲ့ အသံထုတ် —
@@ -52,7 +54,13 @@ pip install --user streamlit edge-tts requests
 - **ffmpeg** — `sudo apt install ffmpeg` (audio/video ဆက်ဖို့)
   (Streamlit Cloud မှာဆို `packages.txt` က အလိုအလျောက် သွင်းပေးတယ်)
 - **Groq API Key** — စာသားထုတ်ဖို့သုံး၊ app ရဲ့ ဘယ်ဘက် sidebar မှာ ထည့်
-  (ဒါမှမဟုတ် `GROQ_API_KEY` env var / Streamlit Secrets အဖြစ် ထား)
+  (ဒါမှမဟုတ် `GROQ_API_KEY` env var / Streamlit Secrets အဖြစ် ထား).
+  ⚠️ Groq က တခါတလေ server IP ကို 403 နဲ့ block တတ်တယ် (Cloudflare WAF —
+  key ပြဿနာမဟုတ်)။ အဲ့လိုဖြစ်ရင် AssemblyAI fallback က အလိုအလျောက်ဝင်မယ်။
+- **AssemblyAI API Key** (optional, fallback အတွက်) — [assemblyai.com](https://www.assemblyai.com/)
+  မှာ ကတ်မလိုဘဲ $50 free credit ရတယ်။ Sidebar မှာ ထည့် (ဒါမှမဟုတ်
+  `ASSEMBLYAI_API_KEY` env var)။ Groq အလုပ်ဖြစ်နေရင် သုံးစရာမလိုဘူး —
+  403 ထိမှသာ အလိုအလျောက်ခေါ်တယ်။
 - **Gemini API Key** — [Google AI Studio](https://aistudio.google.com/) က အလကားယူ၊
   app ရဲ့ ဘယ်ဘက် sidebar မှာ ထည့် (ဒါမှမဟုတ် `GEMINI_API_KEY` env var အဖြစ် ထား)။
   Key တွေကို ဘယ်မှာမှ print / log မလုပ်ဘူး။

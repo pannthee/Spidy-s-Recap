@@ -11,6 +11,8 @@ Pipeline:
   2. Groq Whisper API (whisper-large-v3-turbo) နဲ့ စာသားထုတ် (timestamp ပါ)
      ※ အရင်က local faster-whisper သုံးတာ — Streamlit Cloud ရဲ့ RAM (~1GB)
        ကန့်သတ်ချက်နဲ့ မကိုက်လို့ Groq API နဲ့ လဲထားတာ
+     ※ Groq က 403 IP-block ထိရင် AssemblyAI နဲ့ အလိုအလျောက် fallback
+       (sidebar toggle + ကိုယ့် AssemblyAI key)
   2b. (optional) အပိုင်းသေးလေးတွေ အလိုအလျောက်ပေါင်း — Whisper ရဲ့ 0.2s လို
       အကွက်သေးတွေကြောင့် အသံအရမ်းမြန်ရတာကို ကာကွယ်ဖို့
   3. Gemini နဲ့ သဘာဝကျတဲ့ ပြောစကားမြန်မာလို ဘာသာပြန်
@@ -316,7 +318,8 @@ def transcribe_audio(audio_path, api_key, language=None):
             msg = r.json().get("error", {}).get("message") or f"Groq Error ({r.status_code})"
         except Exception:
             msg = f"Groq Error ({r.status_code})"
-        raise RuntimeError(f"စာသားထုတ်တာ ပျက်သွားတယ်: {msg}")
+        # 403 = Groq firewall က IP block (key မစစ်ခင်) — key ပြဿနာမဟုတ်
+        raise RuntimeError(f"စာသားထုတ်တာ ပျက်သွားတယ် (Groq HTTP {r.status_code}): {msg}")
     body = r.json()
     segs = []
     for s in (body.get("segments") or []):
@@ -328,6 +331,141 @@ def transcribe_audio(audio_path, api_key, language=None):
         segs.append({"start": float(s.get("start") or 0),
                      "end": float(s.get("end") or 0), "text": text})
     return {"language": body.get("language", ""), "segments": segs}
+
+
+# ------------------------------------------------- step 2b: AssemblyAI fallback
+# Groq (whisper-large-v3-turbo) က 403 IP-block ထိတဲ့အခါ သုံးတဲ့ fallback.
+# အဆင့်တွေ: file upload → transcript request → poll → words → segments.
+_AAI_BASE = "https://api.assemblyai.com/v2"
+
+
+def _aai_words_to_segments(words, max_gap=0.7, max_dur=8.0, max_words=25):
+    """AssemblyAI words (ms timestamps) → [{'start','end','text'}] စာပိုဒ်တွေ.
+
+    စည်း: စကားရပ်တဲ့နေရာ (gap ကြီး) / စာကြောင်းရှည်လွန်း / စကားစုပြီးတဲ့နေရာ
+    (.!?) မှာ ဖြတ် — Whisper segment တွေနဲ့ ပုံစံတူအောင်.
+    """
+    segs, cur, cur_start = [], [], None
+    for w in words:
+        text = (w.get("text") or "").strip()
+        if not text:
+            continue
+        s, e = w.get("start", 0) / 1000.0, w.get("end", 0) / 1000.0
+        if cur and cur_start is not None:
+            gap = s - cur[-1][1]
+            dur = e - cur_start
+            if gap > max_gap or dur > max_dur or len(cur) >= max_words \
+                    or cur[-1][2][-1:] in ".!?":
+                segs.append({"start": cur_start, "end": cur[-1][1],
+                             "text": " ".join(t for _, _, t in cur)})
+                cur, cur_start = [], None
+        if cur_start is None:
+            cur_start = s
+        cur.append((s, e, text))
+    if cur:
+        segs.append({"start": cur_start, "end": cur[-1][1],
+                     "text": " ".join(t for _, _, t in cur)})
+    return [sg for sg in segs if sg["end"] > sg["start"] and sg["text"]]
+
+
+def transcribe_assemblyai(audio_path, api_key, language=None, progress_cb=None,
+                          poll_interval=3.0, timeout=900):
+    """AssemblyAI နဲ့ transcribe → {'language':..., 'segments':[...]}.
+
+    language: ISO code (ဥပမာ "en") — None ဆို auto-detect.
+    """
+    import requests  # local import
+    import time
+
+    def _h(json_ct=False):
+        h = {"authorization": api_key}
+        if json_ct:
+            h["content-type"] = "application/json"
+        return h
+
+    # 1. file upload
+    try:
+        with open(audio_path, "rb") as f:
+            r = requests.post(f"{_AAI_BASE}/upload", headers=_h(), data=f,
+                              timeout=300)
+    except Exception:
+        raise RuntimeError("AssemblyAI: ဖိုင်တင်တာ ပျက်သွားတယ် — network စစ်ပြီး ပြန်ကြိုးစားပါ")
+    if r.status_code != 200:
+        raise RuntimeError(f"AssemblyAI upload ပျက်သွားတယ် (HTTP {r.status_code})")
+    upload_url = r.json().get("upload_url")
+    if not upload_url:
+        raise RuntimeError("AssemblyAI upload: upload_url ပြန်မရဘူး")
+    # 2. transcript request
+    payload = {"audio_url": upload_url, "speech_model": "universal"}
+    if language:
+        payload["language_code"] = language
+    else:
+        payload["language_detection"] = True
+    try:
+        r = requests.post(f"{_AAI_BASE}/transcript", headers=_h(True),
+                          json=payload, timeout=60)
+    except Exception:
+        raise RuntimeError("AssemblyAI: transcript တောင်းတာ ပျက်သွားတယ် — network စစ်ပါ")
+    if r.status_code != 200:
+        try:
+            msg = r.json().get("error") or f"HTTP {r.status_code}"
+        except Exception:
+            msg = f"HTTP {r.status_code}"
+        raise RuntimeError(f"AssemblyAI transcript ပျက်သွားတယ်: {msg}")
+    tid = r.json().get("id")
+    if not tid:
+        raise RuntimeError("AssemblyAI: transcript id ပြန်မရဘူး")
+    # 3. poll (ဗီဒီယိုရှည်ရင် မိနစ်ပိုင်းကြာနိုင်တယ်)
+    waited = 0.0
+    while True:
+        try:
+            r = requests.get(f"{_AAI_BASE}/transcript/{tid}", headers=_h(),
+                             timeout=30)
+        except Exception:
+            raise RuntimeError("AssemblyAI: အခြေအနေမေးတာ ပျက်သွားတယ် — network စစ်ပါ")
+        if r.status_code != 200:
+            raise RuntimeError(f"AssemblyAI status ပျက်သွားတယ် (HTTP {r.status_code})")
+        body = r.json()
+        status = body.get("status")
+        if status == "completed":
+            segs = _aai_words_to_segments(body.get("words") or [])
+            return {"language": body.get("language_code", ""), "segments": segs}
+        if status == "error":
+            raise RuntimeError(
+                f"AssemblyAI transcribe ပျက်သွားတယ်: {body.get('error') or 'unknown'}")
+        if waited >= timeout:
+            raise RuntimeError("AssemblyAI: အချိန်ကုန်သွားတယ် — ပြန်ကြိုးစားပါ")
+        time.sleep(poll_interval)
+        waited += poll_interval
+        if progress_cb:
+            progress_cb(waited)
+
+
+def transcribe_with_fallback(audio_path, groq_key=None, assembly_key=None,
+                             language=None, on_note=None):
+    """Groq အရင်ကြိုး → ပျက်ရင် AssemblyAI (key ရှိရင်).
+
+    Returns: (data, provider) — provider: "groq" | "assemblyai".
+    နှစ်ခုလုံးမရရင် နောက်ဆုံး error ကို raise လုပ်တယ်.
+    """
+    last_err = None
+    if groq_key:
+        try:
+            return transcribe_audio(audio_path, groq_key, language), "groq"
+        except Exception as e:
+            last_err = e
+            if on_note:
+                on_note(f"Groq မရဘူး — AssemblyAI နဲ့ ဆက်လုပ်မယ်…")
+    if assembly_key:
+        def _cb(w):
+            if on_note:
+                on_note(f"AssemblyAI နားထောင်နေတယ်… ({w:.0f} စက္ကန့်)")
+        data = transcribe_assemblyai(audio_path, assembly_key, language,
+                                     progress_cb=_cb)
+        return data, "assemblyai"
+    if last_err is not None:
+        raise last_err
+    raise RuntimeError("Groq / AssemblyAI key တစ်ခုခု ထည့်မှ စာသားထုတ်လို့ရမယ် (ဘယ်ဘက် sidebar)။")
 
 
 # ------------------------------------------------------- step 3: translate
@@ -704,6 +842,7 @@ def gemini_narrate(api_key, model_id, scenes_with_desc, src_segments,
 # ----------------------------- browser localStorage (key မပျောက်ဖို့)
 _LS_GEMINI = "audiodub_gemini_key"
 _LS_GROQ = "audiodub_groq_key"
+_LS_ASSEMBLYAI = "audiodub_assemblyai_key"
 _LS_GLOSSARY = "audiodub_glossary"
 
 
@@ -1242,7 +1381,8 @@ def main():
         if S.get("_clear_keys"):
             _ls_del(localS, _LS_GEMINI, "ls_del_gemini")
             _ls_del(localS, _LS_GROQ, "ls_del_groq")
-            for _k in ("gemini_key", "groq_key"):
+            _ls_del(localS, _LS_ASSEMBLYAI, "ls_del_aai")
+            for _k in ("gemini_key", "groq_key", "assemblyai_key"):
                 if _k in S:
                     del S[_k]
             del S["_clear_keys"]
@@ -1282,6 +1422,25 @@ def main():
             st.success("✅ Groq key ရှိတယ်")
         else:
             st.warning("⚠️ Groq key မရှိသေးဘူး (အဆင့် ၂ အတွက်လိုတယ်)")
+        # --- AssemblyAI key: Groq 403 IP-block ထိတဲ့အခါ fallback ---
+        env_aai = os.environ.get("ASSEMBLYAI_API_KEY", "").strip()
+        if not env_aai and "assemblyai_key" not in S:
+            _sa = _ls_get(localS, _LS_ASSEMBLYAI)
+            if _sa:
+                S["assemblyai_key"] = _sa
+        aai_input = st.text_input("AssemblyAI API Key", type="password",
+                                  key="assemblyai_key", placeholder="...",
+                                  help="Groq က 403 IP-block ထိတဲ့အခါ အလိုအလျောက်သုံးမယ့် "
+                                       "fallback — assemblyai.com မှာ ကတ်မလိုဘဲ $50 free "
+                                       "credit ရတယ်။ တစ်ခါထည့်ထားရင် browser မှာ မှတ်ထားမယ်")
+        typed_aai = aai_input.strip()
+        if typed_aai and typed_aai != _ls_get(localS, _LS_ASSEMBLYAI):
+            _ls_set(localS, _LS_ASSEMBLYAI, typed_aai, "ls_set_aai")
+        assembly_key = typed_aai or env_aai
+        if assembly_key:
+            st.success("✅ AssemblyAI key ရှိတယ် (Groq fallback)")
+        else:
+            st.caption("💡 AssemblyAI key မရှိသေးဘူး — Groq ပျက်ရင် fallback မရဘူး")
         # glossary: browser သိမ်းထားတာ ရှိရင် ပြန် load
         if "glossary" not in S:
             _gg = _ls_get(localS, _LS_GLOSSARY)
@@ -1320,6 +1479,11 @@ def main():
         auto_shorten = st.checkbox("✂️ စာရှည်ရင် Gemini နဲ့ အလိုအလျောက်တိုပေး", value=True,
                                    help="အချိန်ကွက်ထဲ မဝင်တဲ့လိုင်းတွေကို Gemini က တိုတိုပြန်ရေးပြီး "
                                         "အသံပြန်ထုတ်မယ် (တစ်ကြိမ်သာ)။ ပိတ်ထားရင် အရင်အတိုင်း")
+        use_fallback = st.checkbox("🔄 Groq ပျက်ရင် AssemblyAI နဲ့ အလိုအလျောက်ဆက်လုပ်",
+                                   value=True,
+                                   help="Groq က 403 IP-block ထိတဲ့အခါ AssemblyAI key နဲ့ "
+                                        "အလိုအလျောက်ဆက်လုပ်မယ် (AssemblyAI key လိုတယ်)။ "
+                                        "ပိတ်ထားရင် Groq ပျက်တာနဲ့ ရပ်မယ်")
         st.markdown("##### 🎬 Recap Studio")
         recap_style = st.checkbox(
             "🎬 Recap စတိုင်နဲ့ ဘာသာပြန်", value=False,
@@ -1493,8 +1657,9 @@ def main():
         st.info("📄 SRT ဖိုင်ကနေ တိုက်ရိုက်ရပြီးမို့ ဒီအဆင့်မလိုဘူး — အဆင့် ၃ ကို ဆက်သွားပါ။")
     elif not S.audio_path:
         st.caption("အရင်ဆုံး အဆင့် ၁ မှာ ဗီဒီယိုတင်ပါ။")
-    elif not groq_key:
-        st.warning("⚠️ Groq API Key ထည့်မှ စာသားထုတ်လို့ရမယ် (ဘယ်ဘက် sidebar)။")
+    elif not (groq_key or assembly_key):
+        st.warning("⚠️ Groq / AssemblyAI API Key တစ်ခုခု ထည့်မှ စာသားထုတ်လို့ရမယ် "
+                   "(ဘယ်ဘက် sidebar)။")
     else:
         _lang_label = st.selectbox(
             "🎙️ မူရင်းဘာသာစကား",
@@ -1508,10 +1673,16 @@ def main():
             _go2 = st.button("🎤 နားထောင်ပြီး စာသားထုတ်ရန်", type="primary",
                              use_container_width=True)
         if _go2:
-            with st.status("Groq Whisper API နဲ့ နားထောင်နေတယ်...", expanded=True) as stt:
+            _init_label = ("Groq Whisper API နဲ့ နားထောင်နေတယ်..."
+                           if groq_key else "AssemblyAI နဲ့ နားထောင်နေတယ်...")
+            with st.status(_init_label, expanded=True) as stt:
                 try:
-                    data = transcribe_audio(S.audio_path, groq_key,
-                                            language=_lang_code)
+                    def _note(msg):
+                        stt.update(label=msg)
+                    data, _provider = transcribe_with_fallback(
+                        S.audio_path, groq_key or None,
+                        assembly_key if use_fallback else None,
+                        language=_lang_code, on_note=_note)
                 except Exception as e:
                     stt.update(state="error")
                     st.error(str(e))
@@ -1527,7 +1698,8 @@ def main():
             S.src_segments, S.lang = segs, data.get("language", "")
             S.translations, S.final_segments, S.fitted = None, None, None
             stt.update(state="complete")
-            st.success(f"✅ အပိုင်း {len(segs)} ခု တွေ့တယ်{merge_note}"
+            _via = "Groq" if _provider == "groq" else "AssemblyAI"
+            st.success(f"✅ အပိုင်း {len(segs)} ခု တွေ့တယ် ({_via}){merge_note}"
                        + (f" (ဘာသာစကား: {S.lang})" if S.lang else ""))
         if S.src_segments:
             with st.expander(f"တွေ့တဲ့အပိုင်း {len(S.src_segments)} ခု ကြည့်"):
