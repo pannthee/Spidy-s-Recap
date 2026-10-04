@@ -396,7 +396,8 @@ def transcribe_assemblyai(audio_path, api_key, language=None, progress_cb=None,
     if not upload_url:
         raise RuntimeError("AssemblyAI upload: upload_url ပြန်မရဘူး")
     # 2. transcript request
-    payload = {"audio_url": upload_url, "speech_model": "universal"}
+    # (2026-10: speech_model (singular) deprecated → speech_models list သုံး)
+    payload = {"audio_url": upload_url, "speech_models": ["universal-2"]}
     if language:
         payload["language_code"] = language
     else:
