@@ -20,6 +20,15 @@ Pipeline:
       → အသံပြန်ထုတ် (တစ်ကြိမ်သာ)
   6. ဗီဒီယိုအသစ်နဲ့ ပေါင်း → MP4 download + SRT download
 
+🎬 Recap Studio (sidebar toggle — default ပိတ်ထား, အဟောင်းမထိခိုက်စေဘူး):
+  3b. Recap စတိုင်ဘာသာပြန် — စာကြောင်းတိုင်းဘာသာပြန်တာအစား movie recap
+      narrator ပြောသလို သဘာဝကျတဲ့ ပြောစကားမြန်မာလို ပြန်ရေး
+  6b. Recap render — အသံကို slot ထဲ အတင်းမထည့်ဘဲ သဘာဝအတိုင်းထား,
+      video အပိုင်းတစ်ခုချင်းစီကို narration အရှည်နဲ့ကိုက်အောင် setpts နဲ့
+      အမြန်/အနှေးချိန် (slow-mo/fast-mo) → dub audio နဲ့ mux
+  6c. Subtitle burn-in — Noto Sans Myanmar (အဖြူ+အနက်ဘောင်) ကို video ထဲ
+      တိုက်ရိုက်ထည့် (libass)
+
 🎙️ Narrator mode (ဗီဒီယိုမုဒ်သာ):
   3'. ffmpeg scene detection → scene တစ်ခုချင်း frame ထုတ် →
      Gemini vision က scene ဖော်ပြချက် → Gemini က third-person မြန်မာ
@@ -330,6 +339,17 @@ _TRANSLATE_SYS = (
     "Return ONLY a JSON array of objects with keys 'id' and 'text'."
 )
 
+# 🎬 Recap Studio: စာကြောင်းတိုင်းဘာသာပြန်တာအစား recap narrator ပြောသလို ပြန်ရေး
+_RECAP_SYS = (
+    "You rewrite video subtitle lines as a Myanmar movie-recap narrator would SAY them. "
+    "For each line, rewrite it into natural SPOKEN Burmese (Myanmar) in third-person "
+    "movie-recap narration style — like a recap channel explaining the story out loud, "
+    "not a literal word-for-word translation. Keep the original meaning of each line, "
+    "keep every line self-contained, and keep it concise enough to be spoken aloud. "
+    "Do not add explanations. "
+    "Return ONLY a JSON array of objects with keys 'id' and 'text'."
+)
+
 
 def _gemini_call(api_key, model_id, system_text, payload_text):
     import requests  # local import: requests မရှိရင် ဒီ step မှပဲ error တက်
@@ -382,15 +402,17 @@ def _glossary_prompt(pairs):
             f"names/terms below, do not transliterate them differently:\n{lines}\n")
 
 
-def gemini_translate(api_key, segments, model_id, progress_cb=None, glossary=None):
+def gemini_translate(api_key, segments, model_id, progress_cb=None, glossary=None,
+                   recap=False):
     """segments: [{'start','end','text'}] → [{'start','end','src','text'}].
 
     ပြန်မရတဲ့ အပိုင်းတွေက မူရင်းစာသားအတိုင်း ကျန်ပြီး failed_ids မှာ မှတ်ထားတယ်။
+    recap=True ဆို စာကြောင်းတိုင်းဘာသာပြန်တာအစား recap narrator စတိုင်နဲ့ ပြန်ရေးတယ်။
     """
     items = [{"id": i, "text": s["text"]} for i, s in enumerate(segments)]
     out = {}
     failed = []
-    _sys = _TRANSLATE_SYS + _glossary_prompt(glossary)
+    _sys = (_RECAP_SYS if recap else _TRANSLATE_SYS) + _glossary_prompt(glossary)
     BATCH = 25
     batches = [items[i:i + BATCH] for i in range(0, len(items), BATCH)]
     for b, batch in enumerate(batches):
@@ -858,6 +880,226 @@ def mux_video(video_path, dubbed_mp3, out_mp4):
     return out_mp4
 
 
+# ------------------------------------------------- 🎬 Recap Studio render engine
+# အလုပ်လုပ်ပုံ: narration (TTS) ကို အချိန်ကွက်ထဲ အတင်းမထည့်ဘဲ သဘာဝအတိုင်းထား →
+# video အပိုင်းတစ်ခုချင်းစီကို သူ့ narration အရှည်နဲ့ကိုက်အောင် setpts နဲ့
+# အမြန်/အနှေးချိန် (slow-mo / fast-mo) → dub audio နဲ့ mux → MP4.
+# မူရင်းအသံမပါဘူး (dub-voice-only — အရင်အတိုင်း).
+def tts_natural(segments, voice, work_segs, progress_cb=None):
+    """segments → [{'start','end','text','mp3','dur'}].
+
+    fit_segment လို slot ထဲ အတင်းမထည့်ဘူး — TTS သဘာဝအရှည်အတိုင်း.
+    Recap render အတွက် narration အရှည်တိုင်းဖို့ သုံးတယ်.
+    """
+    os.makedirs(work_segs, exist_ok=True)
+    out, failed = [], []
+    n = len(segments)
+    for i, s in enumerate(segments):
+        text = s["text"].strip()
+        mp3 = tts_segment(text, voice, VOICE_FEMALE) if text else None
+        if mp3 is None:
+            failed.append((i, s["start"], text[:60]))
+        else:
+            out.append({"start": float(s["start"]), "end": float(s["end"]),
+                        "text": text, "mp3": mp3, "dur": dur(mp3)})
+        if progress_cb:
+            progress_cb((i + 1) / n, i, text[:50])
+    return out, failed
+
+
+def _video_fps(path):
+    """မူရင်း video ရဲ့ fps (recap render က concat ပြီးနောက် CFR ပြန်လုပ်ဖို့)."""
+    try:
+        r = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "v:0",
+             "-show_entries", "stream=r_frame_rate", "-of", "csv=p=0", path],
+            capture_output=True, text=True, timeout=15)
+        num, den = r.stdout.strip().split("/")
+        f = float(num) / float(den)
+        if 1.0 < f < 120.0:
+            return f
+    except Exception:
+        pass
+    return 30.0
+
+
+def render_recap_video(video_path, natural, total_duration, work_dir, out_mp4):
+    """Recap render: video piece တစ်ခုချင်းစီကို narration အရှည်နဲ့ကိုက်အောင် ချိန်.
+
+    natural: tts_natural() ကရတာ [{'start','end','text','mp3','dur'}].
+    Piece ပိုင်းခြားပုံ: [start_i, boundary_i] (boundary_i = နောက် segment ရဲ့ start,
+    နောက်ဆုံးအပိုင်းဆို video အဆုံး) — piece တစ်ခုလုံးရဲ့ အရှည် P_i ကို
+    (dur_i + gap_i) အဖြစ် setpts နဲ့ ချိန်တယ်. Gap (အသံတိတ်) အပိုင်းတွေက
+    သူ့အတိုင်းကျန်မယ်. Leading silence (ပထမအပိုင်းမစခင်) လည်း 1x အတိုင်း.
+
+    Returns: (out_mp4, timeline=[{'start','end','text'}],
+              report=[(seg_idx, factor, note)])
+    """
+    if not natural:
+        raise ValueError("recap render: narration အပိုင်း မရှိဘူး")
+    os.makedirs(work_dir, exist_ok=True)
+    n = len(natural)
+
+    def _boundary(i):
+        b = natural[i + 1]["start"] if i + 1 < n else total_duration
+        return max(b, natural[i]["end"])
+
+    # video pieces: (v_start, v_end, target_dur)
+    pieces = []
+    if natural[0]["start"] > 0.05:
+        pieces.append((0.0, natural[0]["start"], natural[0]["start"]))
+    for i, sg in enumerate(natural):
+        b = _boundary(i)
+        p_dur = b - sg["start"]
+        gap = max(0.0, b - sg["end"])
+        pieces.append((sg["start"], b, sg["dur"] + gap))
+
+    fparts, vlabels = [], []
+    for j, (a, b, target) in enumerate(pieces):
+        p_dur = b - a
+        factor = target / p_dur if p_dur > 0.05 else 1.0
+        factor = min(max(factor, 0.05), 20.0)  # setpts အရမ်းလွန်ကဲတာ ကာကွယ်
+        fparts.append(
+            f"[0:v]trim=start={a:.3f}:end={b:.3f},"
+            # (PTS-STARTPTS): piece အစကို 0 ကနေစပြီး အချိုးချတာ —
+            # PTS သက်သက်ဆို absolute timestamp ကို မြှောက်မိပြီး piece တွေ ထပ်ကုန်မယ်
+            f"settb=AVTB,setpts=(PTS-STARTPTS)*{factor:.4f}[v{j}]")
+        vlabels.append(f"[v{j}]")
+    fcomplex = (";".join(fparts) + ";" + "".join(vlabels) +
+                f"concat=n={len(pieces)}:v=1:a=0,"
+                # setpts ကြောင့် VFR ဖြစ်သွားတဲ့ timestamp တွေကို source fps
+                # အတိုင်း CFR ပြန်လုပ် (slow-mo အပိုင်းမှာ frame ပွား, fast-mo မှာ ချုံ့)
+                f"fps={_video_fps(video_path):.2f}[vout]")
+
+    # audio: tts + gap silence တွေ timeline အတိုင်း ဆက်
+    lst = os.path.join(work_dir, "recap_audio.txt")
+    gap_cache = {}
+
+    def gap_file(g):
+        key = round(g, 2)
+        if key not in gap_cache:
+            gf = os.path.join(work_dir, f"_rgap{key}.mp3")
+            if not os.path.exists(gf):
+                silence(gf, key)
+            gap_cache[key] = os.path.abspath(gf)
+        return gap_cache[key]
+
+    with open(lst, "w") as fh:
+        # concat demuxer က list ထဲက relative path တွေကို list file ရဲ့ dir နဲ့
+        # ပေါင်းဖြေရှင်းလို့ — absolute path ပဲ ရေးမယ်
+        if natural[0]["start"] > 0.05:
+            fh.write(f"file '{gap_file(natural[0]['start'])}'\n")
+        for i, sg in enumerate(natural):
+            fh.write(f"file '{os.path.abspath(sg['mp3'])}'\n")
+            gap = max(0.0, _boundary(i) - sg["end"])
+            if gap > 0.02:
+                fh.write(f"file '{gap_file(gap)}'\n")
+
+    run(["ffmpeg", "-y", "-v", "error", "-i", video_path,
+         "-f", "concat", "-safe", "0", "-i", lst,
+         "-filter_complex", fcomplex,
+         "-map", "[vout]", "-map", "1:a:0",
+         "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
+         "-c:a", "aac", "-b:a", "128k",
+         "-movflags", "+faststart", "-shortest", out_mp4])
+
+    # subtitle အတွက် timeline အသစ်
+    timeline, report, cum = [], [], 0.0
+    if natural[0]["start"] > 0.05:
+        cum = natural[0]["start"]
+    for i, sg in enumerate(natural):
+        b = _boundary(i)
+        p_dur = b - sg["start"]
+        target = sg["dur"] + max(0.0, b - sg["end"])
+        factor = target / p_dur if p_dur > 0.05 else 1.0
+        note = ""
+        if factor < 0.5:
+            note = "အရမ်းနှေး (slow-mo)"
+        elif factor > 2.0:
+            note = "အရမ်းမြန်"
+        report.append((i, factor, note))
+        timeline.append({"start": cum, "end": cum + sg["dur"], "text": sg["text"]})
+        cum += target
+    return out_mp4, timeline, report
+
+
+def _find_myanmar_font():
+    """Noto Sans Myanmar font file ရှာ → path (မတွေ့ရင် None)."""
+    try:
+        r = subprocess.run(["fc-match", "Noto Sans Myanmar", "--format=%{file}"],
+                           capture_output=True, text=True, timeout=10)
+        p = r.stdout.strip()
+        if p and os.path.isfile(p):
+            return p
+    except Exception:
+        pass
+    for p in ("/usr/share/fonts/truetype/noto/NotoSansMyanmar-Bold.ttf",
+              "/usr/share/fonts/truetype/noto/NotoSansMyanmar-Regular.ttf"):
+        if os.path.isfile(p):
+            return p
+    return None
+
+
+def _wrap_mm(text, width=30):
+    """စာတန်းထိုးအတွက် စာလုံးရေအလိုက် ကြောင်းခွဲ (ASS \\N)."""
+    words, lines, cur = text.split(), [], ""
+    for w in words:
+        t = (cur + " " + w).strip()
+        if len(t) > width and cur:
+            lines.append(cur)
+            cur = w
+        else:
+            cur = t
+    if cur:
+        lines.append(cur)
+    return "\\N".join(lines) if lines else text
+
+
+def _ass_ts(sec):
+    h = int(sec // 3600)
+    m = int((sec % 3600) // 60)
+    s = sec % 60
+    return f"{h}:{m:02d}:{s:05.2f}"
+
+
+def segments_to_ass(segments, font_name="Noto Sans Myanmar", font_size=56):
+    """segments → ASS စာသား (1080p recap စတိုင်: အဖြူ+အနက်ဘောင်, အောက်အလယ်)."""
+    head = (
+        "[Script Info]\nScriptType: v4.00+\nPlayResX: 1920\nPlayResY: 1080\n"
+        "WrapStyle: 2\nScaledBorderAndShadow: yes\n\n"
+        "[V4+ Styles]\n"
+        "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, "
+        "OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, "
+        "ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, "
+        "MarginR, MarginV, Encoding\n"
+        f"Style: Recap,{font_name},{font_size},&H00FFFFFF,&H000019FF,&H00000000,"
+        f"&H80000000,-1,0,0,0,100,100,0,0,1,3,0,2,40,40,90,1\n\n"
+        "[Events]\n"
+        "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
+    )
+    out = [head]
+    for sg in segments:
+        txt = _wrap_mm(sg["text"]).replace("{", "(").replace("}", ")")
+        out.append(f"Dialogue: 0,{_ass_ts(sg['start'])},{_ass_ts(sg['end'])},"
+                   f"Recap,,0,0,0,,{txt}")
+    return "\n".join(out)
+
+
+def burn_subtitles(video_in, ass_path, out_mp4):
+    """ASS စာတန်းထိုးကို video ထဲ burn-in လုပ် (libass). Audio က copy."""
+    vf = "subtitles='" + ass_path.replace("\\", "/").replace(
+        ":", "\\:").replace("'", "\\'").replace(",", "\\,") + "'"
+    _fp = _find_myanmar_font()
+    if _fp:
+        fd = os.path.dirname(_fp).replace("\\", "/").replace(
+            ":", "\\:").replace("'", "\\'")
+        vf += f":fontsdir='{fd}'"
+    run(["ffmpeg", "-y", "-v", "error", "-i", video_in,
+         "-vf", vf, "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
+         "-c:a", "copy", "-movflags", "+faststart", out_mp4])
+    return out_mp4
+
+
 def segments_to_srt(segments):
     lines = []
     for i, s in enumerate(segments, 1):
@@ -976,6 +1218,7 @@ def _init_state(st):
         "lang": "", "auto_shortened": False,
         "srt_name": "", "srt_is_my": False, "dl_base": "",
         "scenes": None, "scene_descs": None,
+        "recap_timeline": None, "recap_report": None,
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -1077,6 +1320,24 @@ def main():
         auto_shorten = st.checkbox("✂️ စာရှည်ရင် Gemini နဲ့ အလိုအလျောက်တိုပေး", value=True,
                                    help="အချိန်ကွက်ထဲ မဝင်တဲ့လိုင်းတွေကို Gemini က တိုတိုပြန်ရေးပြီး "
                                         "အသံပြန်ထုတ်မယ် (တစ်ကြိမ်သာ)။ ပိတ်ထားရင် အရင်အတိုင်း")
+        st.markdown("##### 🎬 Recap Studio")
+        recap_style = st.checkbox(
+            "🎬 Recap စတိုင်နဲ့ ဘာသာပြန်", value=False,
+            help="စာကြောင်းတိုင်းဘာသာပြန်တာအစား movie recap narrator ပြောသလို "
+                 "သဘာဝကျတဲ့ ပြောစကားမြန်မာလို ပြန်ရေးမယ် — အဆင့် ၃ မှာသုံးမယ်။ "
+                 "ပိတ်ထားရင် အရင်အတိုင်း")
+        recap_render = st.checkbox(
+            "🎞️ Recap render — video ကို narration အရှည်နဲ့ကိုက်အောင် ချိန်",
+            value=False,
+            help="အသံကို အချိန်ကွက်ထဲ အတင်းမထည့်ဘဲ သဘာဝအတိုင်းထားပြီး၊ "
+                 "video အပိုင်းတစ်ခုချင်းစီကို သူ့ narration အရှည်နဲ့ကိုက်အောင် "
+                 "အမြန်/အနှေးချိန်မယ် (slow-mo / fast-mo)။ ဗီဒီယိုမုဒ်မှာသာ "
+                 "အလုပ်လုပ်တယ်။ ပိတ်ထားရင် အရင်အတိုင်း")
+        burn_subs = st.checkbox(
+            "🔥 Subtitle burn-in", value=False,
+            help="မြန်မာစာတန်းထိုးကို video ထဲ တိုက်ရိုက်ထည့်မယ် "
+                 "(Noto Sans Myanmar, အဖြူ+အနက်ဘောင်)။ SRT သက်သက်လည်း ရမယ်။ "
+                 "ပိတ်ထားရင် အရင်အတိုင်း")
         st.markdown("##### 📖 နာမည်စာရင်း (Glossary)")
         glossary_raw = st.text_area(
             "ဇာတ်ကောင်နာမည်တွေ — တစ်ကြောင်းတစ်ခု",
@@ -1396,7 +1657,8 @@ def main():
                 try:
                     result, failed = gemini_translate(
                         api_key, S.src_segments, model_id.strip() or GEMINI_MODEL_DEFAULT,
-                        progress_cb=lambda f: prog.progress(f), glossary=glossary)
+                        progress_cb=lambda f: prog.progress(f), glossary=glossary,
+                        recap=recap_style)
                 except Exception as e:
                     st.error(f"ဘာသာပြန်တာ ပျက်သွားတယ်: {e}")
                     st.stop()
@@ -1461,6 +1723,7 @@ def main():
             try:
                 S.final_segments = parse_review_text(raw)
                 S.fitted, S.out_mp4, S.out_mp3 = None, None, None
+                S.recap_timeline, S.recap_report = None, None
                 st.success(f"✅ {len(S.final_segments)} ပိုင်း အတည်ပြုပြီးပြီ")
             except ValueError as e:
                 st.error(str(e))
@@ -1512,6 +1775,7 @@ def main():
                     st.info(f"✂️ Gemini က {applied} လိုင်း တိုအောင်ပြင်ပြီးပြီ — "
                             "အသံပြန်ထုတ်ထားတယ်")
             S.fitted, S.fit_report, S.out_mp4, S.out_mp3 = fitted, report, None, None
+            S.recap_timeline, S.recap_report = None, None
             prog.empty(); curlbl.empty()
             st.success(f"✅ အပိုင်း {len(fitted)} ပိုင်း အသံထွက်ပြီးပြီ")
         if S.fit_report:
@@ -1538,22 +1802,64 @@ def main():
     # ---- အဆင့် ၆: assemble + download
     _spidey_card_open(6, "ဗီဒီယိုနဲ့ပေါင်း + Download"
                       if is_video else "အသံဖိုင် Download")
-    if not S.fitted:
+    # recap render မုဒ်ဆို အဆင့် ၅ (fit) မလိုဘူး — သဘာဝအသံကနေ တိုက်ရိုက်တွက်မယ်
+    _can_render = bool(S.fitted) or (recap_render and bool(S.final_segments))
+    if not _can_render:
         st.caption("အရင်ဆုံး အဆင့် ၅ မှာ အသံထုတ်ပါ။")
     else:
         if is_video:
             _bc6, _ = st.columns([1, 2])
             with _bc6:
-                _go6 = st.button("🎬 မူရင်းဗီဒီယိုနဲ့ ပေါင်းရန်", type="primary",
-                                 use_container_width=True)
+                _go6 = st.button(
+                    "🎞️ Recap render (video ချိန် + ပေါင်း)" if recap_render
+                    else "🎬 မူရင်းဗီဒီယိုနဲ့ ပေါင်းရန်",
+                    type="primary", use_container_width=True)
             if _go6:
                 work_asm = os.path.join(WORK_DIR, S.run_id, "asm")
                 dubbed = os.path.join(WORK_DIR, S.run_id, "dubbed_audio.mp3")
                 out = os.path.join(WORK_DIR, S.run_id, "dubbed_video.mp4")
                 with st.status("အသံဆက် + ဗီဒီယိုနဲ့ပေါင်းနေတယ်...", expanded=False):
-                    assemble_dubbed(S.fitted, S.duration, work_asm, dubbed)
-                    _final_audio = dubbed
-                    mux_video(S.video_path, _final_audio, out)
+                    if recap_render and S.final_segments and S.video_path:
+                        # 🎞️ recap render: သဘာဝအသံထုတ် → video ချိန် → mux
+                        work_nat = os.path.join(WORK_DIR, S.run_id, "natural")
+                        _pn = st.progress(0.0, "Recap အသံ သဘာဝအတိုင်းထုတ်နေတယ်...")
+                        natural, _failed_n = tts_natural(
+                            S.final_segments, voice, work_nat,
+                            progress_cb=lambda f, i, t: _pn.progress(f))
+                        _pn.empty()
+                        if _failed_n:
+                            st.warning(f"🔇 အသံထုတ်မရတဲ့အပိုင်း {len(_failed_n)} ခု "
+                                       "ကျော်သွားမယ်")
+                        work_rc = os.path.join(WORK_DIR, S.run_id, "recap")
+                        _tmp_out = os.path.join(work_rc, "recap_video.mp4")
+                        _, S.recap_timeline, S.recap_report = render_recap_video(
+                            S.video_path, natural, S.duration, work_rc, _tmp_out)
+                        if burn_subs:
+                            _ass_p = os.path.join(work_rc, "recap_subs.ass")
+                            with open(_ass_p, "w", encoding="utf-8") as _fh:
+                                _fh.write(segments_to_ass(S.recap_timeline))
+                            burn_subtitles(_tmp_out, _ass_p, out)
+                        else:
+                            shutil.copyfile(_tmp_out, out)
+                        _extreme = [(i, f) for (i, f, _n) in (S.recap_report or [])
+                                    if f < 0.5 or f > 2.0]
+                        if _extreme:
+                            st.info("🎞️ Video အမြန်/အနှေးချိန်ထားတာ: " +
+                                    ", ".join(f"#{i + 1} x{f:.2f}"
+                                              for i, f in _extreme[:10]) +
+                                    ("…" if len(_extreme) > 10 else ""))
+                    else:
+                        assemble_dubbed(S.fitted, S.duration, work_asm, dubbed)
+                        _final_audio = dubbed
+                        mux_video(S.video_path, _final_audio, out)
+                        S.recap_timeline, S.recap_report = None, None
+                        if burn_subs and S.video_path:
+                            _ass_p = os.path.join(work_asm, "dub_subs.ass")
+                            with open(_ass_p, "w", encoding="utf-8") as _fh:
+                                _fh.write(segments_to_ass(S.final_segments))
+                            _tmp = os.path.join(work_asm, "dubbed_video_tmp.mp4")
+                            os.replace(out, _tmp)
+                            burn_subtitles(_tmp, _ass_p, out)
                 S.out_mp4 = out
                 st.success("✅ ပြီးပြီ! အောက်မှာ download ချလို့ရပြီ")
         else:
@@ -1599,7 +1905,9 @@ def main():
             _di += 1
         if S.final_segments:
             with _dc[_di]:
-                st.download_button("⬇️ SRT", segments_to_srt(S.final_segments),
+                # recap render လုပ်ထားရင် timeline အသစ်နဲ့ကိုက်တဲ့ SRT ပေး
+                _srt_segs = S.recap_timeline or S.final_segments
+                st.download_button("⬇️ SRT", segments_to_srt(_srt_segs),
                                    file_name=f"{_dl}.srt", mime="text/plain",
                                    use_container_width=True)
     _spidey_card_close()
