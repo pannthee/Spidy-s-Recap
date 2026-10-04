@@ -468,12 +468,21 @@ def transcribe_with_fallback(audio_path, groq_key=None, assembly_key=None,
 
 
 # ------------------------------------------------------- step 3: translate
+# Gemini က တခါတလေ Tamil/Devanagari လို တခြား script တွေ ညှပ်ထုတ်တတ်လို့ —
+# စာထုတ် prompt တိုင်းမှာ မြန်မာ Unicode သက်သက် သုံးဖို့ အတိအကျမှာထားတယ်
+_MYANMAR_ONLY = (
+    " Write every 'text' value ONLY in Myanmar (Burmese) Unicode script — "
+    "never mix in Tamil, Devanagari/Hindi, Thai, Chinese, Korean, Japanese, "
+    "or any other non-Myanmar script, not even for names."
+)
+
 _TRANSLATE_SYS = (
     "You translate video subtitle lines for Myanmar voiceover dubbing. "
     "Translate each line into natural SPOKEN Burmese (Myanmar) — the way a narrator "
     "would say it out loud, not formal written style. Keep the meaning, keep it "
     "concise (it must fit the original speaking time). Do not add explanations. "
     "Return ONLY a JSON array of objects with keys 'id' and 'text'."
+    + _MYANMAR_ONLY
 )
 
 # 🎬 Recap Studio: စာကြောင်းတိုင်းဘာသာပြန်တာအစား recap narrator ပြောသလို ပြန်ရေး
@@ -485,6 +494,7 @@ _RECAP_SYS = (
     "keep every line self-contained, and keep it concise enough to be spoken aloud. "
     "Do not add explanations. "
     "Return ONLY a JSON array of objects with keys 'id' and 'text'."
+    + _MYANMAR_ONLY
 )
 
 
@@ -623,6 +633,7 @@ _SHORTEN_SYS = (
     "words, drop repeated ideas, keep only the core meaning. Keep natural SPOKEN "
     "Burmese (Myanmar). Each item has 'max_chars' — stay under it if possible. "
     "Return ONLY a JSON array of objects with keys 'id' and 'text'."
+    + _MYANMAR_ONLY
 )
 
 
@@ -674,6 +685,7 @@ _NARRATE_SYS = (
     "Ground every line in the provided visual description and dialogue — "
     "do NOT invent events, characters, or dialogue not supported by them. "
     "Return ONLY a JSON array of objects with keys 'id' and 'text'."
+    + _MYANMAR_ONLY
 )
 
 
@@ -1248,6 +1260,24 @@ def parse_review_text(raw):
 # ဘာသာပြန်အမှား/အကြွင်းအကျန်တွေ ဖမ်းဖို့
 _FOREIGN_SCRIPT_RE = re.compile(
     r"[\u0B80-\u0BFF\u0900-\u097F\u0E00-\u0E7F\u3040-\u30FF\uAC00-\uD7AF\u4E00-\u9FFF]")
+_FOREIGN_SCRIPT_NAMES = (
+    (0x0B80, 0x0BFF, "Tamil"),
+    (0x0900, 0x097F, "Devanagari"),
+    (0x0E00, 0x0E7F, "Thai"),
+    (0x3040, 0x30FF, "Japanese"),
+    (0xAC00, 0xD7AF, "Korean"),
+    (0x4E00, 0x9FFF, "Chinese"),
+)
+
+
+def _foreign_script_name(text):
+    """တခြား script ပါနေရင် နာမည်ပြန် (flag message အတွက်)."""
+    for ch in text:
+        o = ord(ch)
+        for lo, hi, name in _FOREIGN_SCRIPT_NAMES:
+            if lo <= o <= hi:
+                return name
+    return "တခြား"
 # my-MM TTS ခန့်မှန်းအမြန်နှုန်း (စာလုံး/စက္ကန့်) — ပြဿနာလိုင်းရှာဖို့ ခန့်မှန်းချက်သက်သက်
 _EST_CPS = 14.0
 
@@ -1269,7 +1299,8 @@ def find_problem_lines(segments, max_speed):
             if slot > 0 and len(text) > slot * _EST_CPS * max_speed:
                 reasons.append("ရှည်လွန်းတယ် (အသံထွက်ရင် အချိန်မလောက်နိုင်ဘူး)")
             if _FOREIGN_SCRIPT_RE.search(text):
-                reasons.append("မြန်မာမဟုတ်တဲ့ စာလုံး ပါနေတယ်")
+                reasons.append(
+                    f"{_foreign_script_name(text)} စာလုံး ပါနေတယ်")
             src = (s.get("src") or "").strip()
             if src and text == src and re.search(r"[A-Za-z]{3,}", text):
                 reasons.append("ဘာသာမပြန်ရသေးဘူး (မူရင်းအတိုင်း ကျန်နေတယ်)")
@@ -1341,6 +1372,8 @@ def main():
         if typed_gemini and typed_gemini != _ls_get(localS, _LS_GEMINI):
             _ls_set(localS, _LS_GEMINI, typed_gemini, "ls_set_gemini")
         api_key = typed_gemini or env_key
+        st.markdown("🔑 key အလကားယူရန်: "
+                    "[aistudio.google.com/apikey](https://aistudio.google.com/apikey)")
         if api_key:
             st.success("✅ Gemini key ရှိတယ်")
         else:
@@ -1359,6 +1392,8 @@ def main():
         if typed_groq and typed_groq != _ls_get(localS, _LS_GROQ):
             _ls_set(localS, _LS_GROQ, typed_groq, "ls_set_groq")
         groq_key = typed_groq or env_groq
+        st.markdown("🔑 key အလကားယူရန်: "
+                    "[console.groq.com/keys](https://console.groq.com/keys)")
         if groq_key:
             st.success("✅ Groq key ရှိတယ်")
         else:
@@ -1378,6 +1413,8 @@ def main():
         if typed_aai and typed_aai != _ls_get(localS, _LS_ASSEMBLYAI):
             _ls_set(localS, _LS_ASSEMBLYAI, typed_aai, "ls_set_aai")
         assembly_key = typed_aai or env_aai
+        st.markdown("🔑 key ယူရန် ($50 free, ကတ်မလို): "
+                    "[assemblyai.com](https://www.assemblyai.com/dashboard/signup)")
         if assembly_key:
             st.success("✅ AssemblyAI key ရှိတယ် (Groq fallback)")
         else:
@@ -1429,8 +1466,9 @@ def main():
         recap_style = st.checkbox(
             "🎬 Recap စတိုင်နဲ့ ဘာသာပြန်", value=False,
             help="စာကြောင်းတိုင်းဘာသာပြန်တာအစား movie recap narrator ပြောသလို "
-                 "သဘာဝကျတဲ့ ပြောစကားမြန်မာလို ပြန်ရေးမယ် — အဆင့် ၃ မှာသုံးမယ်။ "
-                 "ပိတ်ထားရင် အရင်အတိုင်း")
+                 "သဘာဝကျတဲ့ ပြောစကားမြန်မာလို ပြန်ရေးမယ် — အဆင့် ၃ မှာသုံးမယ် "
+                 "(🎙️ Narrator ပြန်ပြော mode မှာ အကျိုးမသက်ရောက်ဘူး — သူက "
+                 "video ကြည့်ပြီး သက်သက် script ရေးတာ)။ ပိတ်ထားရင် အရင်အတိုင်း")
         recap_render = st.checkbox(
             "🎞️ Recap render — video ကို narration အရှည်နဲ့ကိုက်အောင် ချိန်",
             value=True,
