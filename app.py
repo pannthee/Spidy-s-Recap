@@ -40,6 +40,7 @@ Run:  streamlit run app.py
 import asyncio
 import hashlib
 import json
+import math
 import os
 import re
 import shutil
@@ -688,15 +689,16 @@ def gemini_shorten(api_key, model_id, items, glossary=None):
 # third-person မြန်မာ narrator script ရေး → ကျန်တဲ့ pipeline (TTS/fit/mix)
 # ဒီအတိုင်း ပြန်သုံး.
 NARR_MAX_SCENES = 40      # vision token ကုန်သက်သာအောင် scene အများဆုံး
-NARR_MAX_SCENE_LEN = 45.0  # ဒီထက်ရှည်တဲ့ scene ကို ထပ်ခွဲ
+NARR_MAX_SCENE_LEN = 30.0  # ဒီထက်ရှည်တဲ့ scene ကို ထပ်ခွဲ
 NARR_VISION_BATCH = 6     # vision API တစ်ခေါက်မှာ scene ဘယ်နှခုထည့်မလဲ
 NARR_CPS = 12.0           # narrator script အရှည်ချိန်ဖို့ (သဘာဝနှုန်း, conservative)
 
 _VISION_SYS = (
     "You are analyzing video frames for a Myanmar recap narrator. "
-    "For each frame, describe in ONE concise English sentence: who or what is "
-    "visible, the action happening, and the mood or setting. Focus on "
-    "story-relevant visual information (characters, actions, key objects). "
+    "For each scene you get 3 frames (beginning/middle/end of the scene). "
+    "Describe the scene in 1-2 concise English sentences: who or what is "
+    "visible, the action happening across the frames, and the mood or setting. "
+    "Focus on story-relevant visual information (characters, actions, key objects). "
     "Return ONLY a JSON array of objects with keys 'id' and 'desc'."
 )
 
@@ -717,7 +719,7 @@ _NARRATE_SYS = (
 )
 
 
-def detect_scenes(video_path, threshold=0.35, max_scenes=NARR_MAX_SCENES,
+def detect_scenes(video_path, threshold=0.30, max_scenes=NARR_MAX_SCENES,
                   max_len=NARR_MAX_SCENE_LEN):
     """ffmpeg scene detection → [{'start','end'}].
 
@@ -739,11 +741,12 @@ def detect_scenes(video_path, threshold=0.35, max_scenes=NARR_MAX_SCENES,
     cuts.append(total)
     scenes = [{"start": cuts[i], "end": cuts[i + 1]}
               for i in range(len(cuts) - 1) if cuts[i + 1] - cuts[i] > 0.3]
-    # ရှည်လွန်းတာ ခွဲ
+    # ရှည်လွန်းတာ ခွဲ (ceil: 30s ကျော်ရင် အပိုင်းခွဲရမယ် — AI video လို
+    # cut မသိသာတာတွေမှာ scene နည်းနည်း တွေ့တဲ့ ပြဿနာ ကာကွယ်ဖို့)
     split = []
     for s in scenes:
         L = s["end"] - s["start"]
-        n = max(1, int(round(L / max_len)))
+        n = max(1, math.ceil(L / max_len))
         for k in range(n):
             split.append({"start": s["start"] + L * k / n,
                           "end": s["start"] + L * (k + 1) / n})
@@ -758,24 +761,28 @@ def detect_scenes(video_path, threshold=0.35, max_scenes=NARR_MAX_SCENES,
 
 
 def extract_scene_frames(video_path, scenes, out_dir):
-    """scene တစ်ခုချင်း အလယ်ဖရိန် တစ်ပုံ (320px, jpg). → [path|None]."""
+    """scene တစ်ခုချင်း frame ၃ ပုံ (25%/50%/75%, 320px jpg). → [[path|None]]."""
     os.makedirs(out_dir, exist_ok=True)
-    paths = []
+    all_paths = []
     for i, s in enumerate(scenes):
-        mid = (s["start"] + s["end"]) / 2
-        p = os.path.join(out_dir, f"scene_{i:03d}.jpg")
-        try:
-            run(["ffmpeg", "-y", "-v", "error", "-ss", f"{mid:.2f}",
-                 "-i", video_path, "-frames:v", "1",
-                 "-vf", "scale=320:-1", "-q:v", "4", p])
-        except Exception:
-            pass
-        paths.append(p if os.path.isfile(p) else None)
-    return paths
+        L = s["end"] - s["start"]
+        paths = []
+        for k, frac in enumerate((0.25, 0.5, 0.75)):
+            t = s["start"] + L * frac
+            p = os.path.join(out_dir, f"scene_{i:03d}_{k}.jpg")
+            try:
+                run(["ffmpeg", "-y", "-v", "error", "-ss", f"{t:.2f}",
+                     "-i", video_path, "-frames:v", "1",
+                     "-vf", "scale=320:-1", "-q:v", "4", p])
+            except Exception:
+                pass
+            paths.append(p if os.path.isfile(p) else None)
+        all_paths.append(paths)
+    return all_paths
 
 
 def _gemini_vision_call(api_key, model_id, system_text, items):
-    """items: [{'id', 'image_path'|None, 'label'}] → {id: desc}.
+    """items: [{'id', 'image_paths':[path|None], 'label'}] → {id: desc}.
 
     Vision ပျက်တဲ့ batch / scene ကို ကျော်မယ် (ပြန်မရတာ transcript-only
     နဲ့ ဆက်လို့ရအောင်).
@@ -789,12 +796,13 @@ def _gemini_vision_call(api_key, model_id, system_text, items):
                  {"text": "Frames:\n" + "\n".join(
                      f"[{x['id']}] {x['label']}" for x in batch)}]
         for x in batch:
-            if x["image_path"] and os.path.isfile(x["image_path"]):
-                with open(x["image_path"], "rb") as f:
-                    b64 = base64.b64encode(f.read()).decode("ascii")
-                parts.append({"text": f"Frame [{x['id']}]:"})
-                parts.append({"inline_data": {"mime_type": "image/jpeg",
-                                              "data": b64}})
+            for _fi, _ip in enumerate(x.get("image_paths") or []):
+                if _ip and os.path.isfile(_ip):
+                    with open(_ip, "rb") as f:
+                        b64 = base64.b64encode(f.read()).decode("ascii")
+                    parts.append({"text": f"Frame [{x['id']}]#{_fi + 1}:"})
+                    parts.append({"inline_data": {"mime_type": "image/jpeg",
+                                                  "data": b64}})
         body = {
             "contents": [{"role": "user", "parts": parts}],
             "generationConfig": {"responseMimeType": "application/json",
@@ -826,7 +834,7 @@ def describe_scenes(api_key, model_id, video_path, scenes, work_dir,
     """scene တွေကို frame ထုတ် → Gemini vision → [{'start','end','desc'}]."""
     frames = extract_scene_frames(
         video_path, scenes, os.path.join(work_dir, "frames"))
-    items = [{"id": i, "image_path": p,
+    items = [{"id": i, "image_paths": p,
               "label": f"scene {fmt_ts(s['start'])}-{fmt_ts(s['end'])}"}
              for i, (s, p) in enumerate(zip(scenes, frames))]
     got = {}
@@ -862,7 +870,9 @@ _NARRATE_CONT = (
     "scenes). Use both: keep every character's role-label EXACTLY as in STORY; "
     "connect each scene to what came before instead of re-introducing people or "
     "events; compress uneventful transitional scenes into a brief bridge line and "
-    "give dramatic scenes their full weight (never exceed max_chars)."
+    "give dramatic scenes their full weight (never exceed max_chars). "
+    "Keep narration substantial — a story-rich scene should use most of its "
+    "max_chars; only truly empty transitional moments may be brief."
 )
 
 
