@@ -1863,13 +1863,9 @@ def main():
             st.audio(S["_voice_test"])
         st.divider()
         st.markdown("#### ⚙️ ရွေးချယ်စရာ")
-        auto_merge = st.checkbox("🔗 အပိုင်းသေးတွေ အလိုအလျောက်ပေါင်း", value=False,
-                                 help="Whisper ပေးတဲ့ စက္ကန့်ပိုင်းအကွက်သေးလေးတွေကို "
-                                      "ကပ်နေတဲ့အပိုင်းနဲ့ ပေါင်းမယ် — အသံအရမ်းမြန်ရတာသက်သာမယ်။ "
-                                      "ပိတ်ထားရင် အရင်အတိုင်း")
-        auto_shorten = st.checkbox("✂️ စာရှည်ရင် Gemini နဲ့ အလိုအလျောက်တိုပေး", value=False,
-                                   help="အချိန်ကွက်ထဲ မဝင်တဲ့လိုင်းတွေကို Gemini က တိုတိုပြန်ရေးပြီး "
-                                        "အသံပြန်ထုတ်မယ် (တစ်ကြိမ်သာ)။ ပိတ်ထားရင် အရင်အတိုင်း")
+        # 🔗/✂️ UI ဝှက်ထားတယ် (code ကျန်တယ်) — render အမြဲသုံးတော့ မလိုတော့ဘူး
+        auto_merge = False
+        auto_shorten = False
         use_fallback = st.checkbox("🔄 Groq ပျက်ရင် AssemblyAI နဲ့ အလိုအလျောက်ဆက်လုပ်",
                                    value=True,
                                    help="Groq က 403 IP-block ထိတဲ့အခါ AssemblyAI key နဲ့ "
