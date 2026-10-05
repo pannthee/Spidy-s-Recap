@@ -511,11 +511,13 @@ _TRANSLATE_SYS = (
 # 🎬 Recap Studio: စာကြောင်းတိုင်းဘာသာပြန်တာအစား recap narrator ပြောသလို ပြန်ရေး
 _RECAP_SYS = (
     "You rewrite video subtitle lines as a Myanmar movie-recap narrator would SAY them. "
-    "For each line, rewrite it into natural SPOKEN Burmese (Myanmar) in third-person "
-    "movie-recap narration style — like a recap channel explaining the story out loud, "
-    "not a literal word-for-word translation. Keep the original meaning of each line, "
-    "keep every line self-contained, and keep it concise enough to be spoken aloud. "
-    "Do not add explanations. "
+    "For each line, RETELL it in natural SPOKEN Burmese (Myanmar) in third-person "
+    "movie-recap narration style — like those gripping recap channels: SHORT punchy "
+    "sentences, one story beat per sentence, plain and dramatic, never a literal "
+    "word-for-word translation. Refer to characters by role ('the delivery man', "
+    "'the woman', 'the old man') instead of bare pronouns. Keep the original meaning "
+    "of each line, keep every line self-contained, and keep it concise enough to be "
+    "spoken aloud. Do not add explanations. "
     "Return ONLY a JSON array of objects with keys 'id' and 'text'."
     + _MYANMAR_ONLY
 )
@@ -700,9 +702,12 @@ _VISION_SYS = (
 
 _NARRATE_SYS = (
     "You write Myanmar voiceover narration for video recap dubbing, in "
-    "THIRD-PERSON narrator style — like a recap channel explaining the story "
-    "clearly and simply so viewers understand easily. Use natural SPOKEN "
-    "Burmese (Myanmar), not formal written style. "
+    "THIRD-PERSON narrator style — like those gripping movie-recap channels that "
+    "hook viewers: SHORT punchy sentences, one story beat per sentence, plain "
+    "dramatic storytelling. Refer to characters by role ('the delivery man', "
+    "'the little girl', 'the wealthy old man') instead of bare pronouns. Use "
+    "natural SPOKEN Burmese (Myanmar), not formal written style — the way a "
+    "narrator speaks out loud. "
     "For each scene, write narration that fits within max_chars (it must be "
     "speakable within the scene's duration at natural speed). "
     "Ground every line in the provided visual description and dialogue — "
