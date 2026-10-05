@@ -761,13 +761,13 @@ def detect_scenes(video_path, threshold=0.30, max_scenes=NARR_MAX_SCENES,
 
 
 def extract_scene_frames(video_path, scenes, out_dir):
-    """scene တစ်ခုချင်း frame ၃ ပုံ (25%/50%/75%, 320px jpg). → [[path|None]]."""
+    """scene တစ်ခုချင်း frame ၃ ပုံ (10%/50%/90%, 320px jpg). → [[path|None]]."""
     os.makedirs(out_dir, exist_ok=True)
     all_paths = []
     for i, s in enumerate(scenes):
         L = s["end"] - s["start"]
         paths = []
-        for k, frac in enumerate((0.25, 0.5, 0.75)):
+        for k, frac in enumerate((0.1, 0.5, 0.9)):
             t = s["start"] + L * frac
             p = os.path.join(out_dir, f"scene_{i:03d}_{k}.jpg")
             try:
@@ -856,11 +856,16 @@ _STORY_BIBLE_SYS = (
     "'characters' (list of at most 8, most important first, each "
     "{'label': 'the delivery man', 'desc': '...'}), "
     "'arc' (2-3 sentence overall story arc: setup, central conflict/turning point, stakes), "
+    "'premise' (the core setup revealed in the OPENING scenes, stated plainly in "
+    "one or two sentences — e.g. a hidden power, a secret identity, the inciting "
+    "incident; this is the most important part of the bible), "
     "'setting' (one line). "
     "Rules: give every recurring person ONE stable role-label in plain English "
     "('the delivery man', 'the little girl', 'the wealthy old man') — the narrator "
     "will reuse these exact labels in every scene; merge duplicates (the same person "
     "described differently across scenes gets a single label). "
+    "Pay special attention to the opening scenes: the premise must be captured "
+    "completely and accurately — the narrator will establish it before anything else. "
     "Return ONLY the JSON object."
 )
 
@@ -872,7 +877,9 @@ _NARRATE_CONT = (
     "events; compress uneventful transitional scenes into a brief bridge line and "
     "give dramatic scenes their full weight (never exceed max_chars). "
     "Keep narration substantial — a story-rich scene should use most of its "
-    "max_chars; only truly empty transitional moments may be brief."
+    "max_chars; only truly empty transitional moments may be brief. "
+    "The opening scene(s) MUST establish the premise from STORY clearly "
+    "(who the characters are, any hidden powers or secrets) — never skip the setup."
 )
 
 
@@ -929,6 +936,7 @@ def gemini_narrate(api_key, model_id, scenes_with_desc, src_segments,
             f"{c.get('label', '')} ({c.get('desc', '')})"
             for c in _bible.get("characters", [])[:8])
         _bible_txt = (f"STORY — characters: {_chars}. "
+                      f"Premise: {_bible.get('premise', '')} "
                       f"Arc: {_bible.get('arc', '')} "
                       f"Setting: {_bible.get('setting', '')}").strip()
     BATCH = 10
