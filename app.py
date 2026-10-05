@@ -841,6 +841,52 @@ def describe_scenes(api_key, model_id, video_path, scenes, work_dir,
              "desc": got.get(i, "")} for i, s in enumerate(scenes)]
 
 
+_STORY_BIBLE_SYS = (
+    "You are the story editor for a Myanmar video-recap dubbing project. "
+    "You receive scene-by-scene visual descriptions (and any dialogue) of a video. "
+    "Build a compact STORY BIBLE as a JSON object with keys: "
+    "'characters' (list of at most 8, most important first, each "
+    "{'label': 'the delivery man', 'desc': '...'}), "
+    "'arc' (2-3 sentence overall story arc: setup, central conflict/turning point, stakes), "
+    "'setting' (one line). "
+    "Rules: give every recurring person ONE stable role-label in plain English "
+    "('the delivery man', 'the little girl', 'the wealthy old man') — the narrator "
+    "will reuse these exact labels in every scene; merge duplicates (the same person "
+    "described differently across scenes gets a single label). "
+    "Return ONLY the JSON object."
+)
+
+_NARRATE_CONT = (
+    "CONTINUITY: You also receive STORY (characters with stable role-labels and the "
+    "overall story arc) and STORY SO FAR (narration already written for earlier "
+    "scenes). Use both: keep every character's role-label EXACTLY as in STORY; "
+    "connect each scene to what came before instead of re-introducing people or "
+    "events; compress uneventful transitional scenes into a brief bridge line and "
+    "give dramatic scenes their full weight (never exceed max_chars)."
+)
+
+
+def build_story_bible(api_key, model_id, scenes_with_desc, src_segments,
+                      glossary=None):
+    """Scene အားလုံးကနေ story bible (characters + arc). ပျက်ရင် None → fallback."""
+    try:
+        beats = []
+        for i, sc in enumerate(scenes_with_desc):
+            dlg = " ".join(x["text"] for x in src_segments
+                           if x["start"] < sc["end"] and x["end"] > sc["start"])
+            beats.append({"id": i,
+                          "visual": (sc["desc"] or "")[:250],
+                          "dialogue": dlg[:400]})
+        res = _gemini_call(api_key, model_id,
+                           _STORY_BIBLE_SYS + _glossary_prompt(glossary),
+                           json.dumps(beats, ensure_ascii=False))
+        if isinstance(res, dict) and res.get("characters"):
+            return res
+        return None
+    except Exception:
+        return None
+
+
 def gemini_narrate(api_key, model_id, scenes_with_desc, src_segments,
                    glossary=None, progress_cb=None):
     """scene တစ်ခုချင်းအတွက် third-person မြန်မာ narrator script.
@@ -848,6 +894,10 @@ def gemini_narrate(api_key, model_id, scenes_with_desc, src_segments,
     → [{'start','end','text','src'}] — 'src' ထဲမှာ scene ဖော်ပြချက်
     (အဆင့် ၄ review မှာ ကြည့်လို့ရအောင်). text လွတ်လာတဲ့ scene လည်း
     ပါတယ် (အဆင့် ၄ မှာ ကိုယ်တိုင်ဖြည့် / problem finder က ထောက်မယ်).
+
+    Continuity: အရင် story bible (characters + arc) တစ်ခေါက်တည်း တည်ဆောက် →
+    batch တွေကို အစဉ်လိုက် ရေးရင်း အရင် batch တွေရဲ့ narration ကို
+    STORY SO FAR အဖြစ် နောက် batch တွေမှာ ထည့်ပေးတယ်။
     """
     items = []
     for i, s in enumerate(scenes_with_desc):
@@ -859,18 +909,43 @@ def gemini_narrate(api_key, model_id, scenes_with_desc, src_segments,
                       "visual": (s["desc"] or "")[:300],
                       "dialogue": dlg[:600]})
     out = {}
-    _sys = _NARRATE_SYS + _glossary_prompt(glossary)
+    _sys_base = _NARRATE_SYS + _glossary_prompt(glossary)
+    # story bible: တစ်ဗီဒီယိုလုံး တစ်ခေါက်တည်း (ပျက်ရင် None → old behavior)
+    _bible = build_story_bible(api_key, model_id, scenes_with_desc,
+                               src_segments, glossary)
+    _bible_txt = ""
+    if _bible:
+        _chars = "; ".join(
+            f"{c.get('label', '')} ({c.get('desc', '')})"
+            for c in _bible.get("characters", [])[:8])
+        _bible_txt = (f"STORY — characters: {_chars}. "
+                      f"Arc: {_bible.get('arc', '')} "
+                      f"Setting: {_bible.get('setting', '')}").strip()
     BATCH = 10
     batches = [items[i:i + BATCH] for i in range(0, len(items), BATCH)]
+    _so_far = []  # အရင် batch တွေရဲ့ narration, scene အစဉ်လိုက်
     for b, batch in enumerate(batches):
+        _sys_b = _sys_base
+        _ctx = ""
+        if _bible_txt:
+            _ctx += "\n" + _bible_txt
+        _so_far_txt = " ".join(_so_far)[-3000:]
+        if _so_far_txt:
+            _ctx += "\nSTORY SO FAR: " + _so_far_txt
+        if _ctx:
+            _sys_b += "\n" + _NARRATE_CONT + _ctx
         try:
-            res = _gemini_call(api_key, model_id, _sys,
+            res = _gemini_call(api_key, model_id, _sys_b,
                                json.dumps(batch, ensure_ascii=False))
             for row in res:
                 if isinstance(row, dict) and "id" in row and "text" in row:
                     out[int(row["id"])] = str(row["text"]).strip()
         except Exception:
             pass
+        for _it in batch:  # နောက် batch အတွက် စုထား
+            _t = out.get(_it["id"], "")
+            if _t:
+                _so_far.append(_t)
         if progress_cb:
             progress_cb((b + 1) / len(batches))
     return [{"start": s["start"], "end": s["end"],
