@@ -695,10 +695,15 @@ NARR_CPS = 12.0           # narrator script အရှည်ချိန်ဖိ
 
 _VISION_SYS = (
     "You are analyzing video frames for a Myanmar recap narrator. "
-    "For each scene you get 3 frames (beginning/middle/end of the scene). "
-    "Describe the scene in 1-2 concise English sentences: who or what is "
-    "visible, the action happening across the frames, and the mood or setting. "
-    "Focus on story-relevant visual information (characters, actions, key objects). "
+    "For each scene you get 3 frames in order (near-start/middle/near-end). "
+    "Describe the scene in 2-3 concise English sentences: who is visible, "
+    "the key action, and the mood. CRITICAL: compare the frames for STATE CHANGES "
+    "(something empty becoming full, appearing, transforming, a surprising event). "
+    "If a change happens across the frames, describe the CHANGE as the main beat "
+    "(e.g. 'the girl touches the jar and rice magically fills it'), not just the "
+    "final state. Magical or surprising transformations are the most important "
+    "story information — never omit them. Also read any burned-in text overlays; "
+    "they often label the key event. "
     "Return ONLY a JSON array of objects with keys 'id' and 'desc'."
 )
 
@@ -761,13 +766,13 @@ def detect_scenes(video_path, threshold=0.30, max_scenes=NARR_MAX_SCENES,
 
 
 def extract_scene_frames(video_path, scenes, out_dir):
-    """scene တစ်ခုချင်း frame ၃ ပုံ (10%/50%/90%, 320px jpg). → [[path|None]]."""
+    """scene တစ်ခုချင်း frame ၃ ပုံ (5%/50%/95%, 320px jpg). → [[path|None]]."""
     os.makedirs(out_dir, exist_ok=True)
     all_paths = []
     for i, s in enumerate(scenes):
         L = s["end"] - s["start"]
         paths = []
-        for k, frac in enumerate((0.1, 0.5, 0.9)):
+        for k, frac in enumerate((0.05, 0.5, 0.95)):
             t = s["start"] + L * frac
             p = os.path.join(out_dir, f"scene_{i:03d}_{k}.jpg")
             try:
