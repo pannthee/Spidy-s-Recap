@@ -1436,6 +1436,84 @@ def find_problem_lines(segments, max_speed):
 
 
 
+def _qc_bad_reason(text):
+    """ဘာသာပြန်လိုင်း အရည်အသွေးစစ် → ပျက်ရင် အကြောင်း, ကောင်းရင် None."""
+    t = (text or "").strip()
+    if not t:
+        return "စာသားလွတ်နေတယ်"
+    if _FOREIGN_SCRIPT_RE.search(t):
+        return f"{_foreign_script_name(t)} စာလုံး ပါနေတယ်"
+    if not re.search(r"[\u1000-\u109F]", t) and re.search(r"[A-Za-z]{3,}", t):
+        return "ဘာသာမပြန်ရသေးဘူး (မူရင်းအတိုင်း ကျန်နေတယ်)"
+    return None
+
+
+def _qc_retranslate_sys(glossary=None):
+    return (
+        "You translate ONE video subtitle line into natural SPOKEN Burmese (Myanmar). "
+        "Output ONLY Myanmar (Burmese) Unicode script — never mix in Tamil, "
+        "Devanagari/Hindi, Thai, Chinese, Korean, Japanese, Latin, or any other "
+        "non-Myanmar script, not even for names. Keep the meaning, keep it concise. "
+        "Return ONLY a JSON object with key 'text'."
+        + _glossary_prompt(glossary)
+    )
+
+
+def qc_retranslate(api_key, model_id, translations, glossary=None,
+                   progress_cb=None, max_retries=2):
+    """ဘာသာပြန်ပြီးသားလိုင်းတွေ အရည်အသွေးစစ် → ပျက်တာတွေ တစ်ကြောင်းချင်း ပြန်ပြန်.
+
+    → (translations, report). report: {"checked", "bad_initial", "bad_ratio",
+    "retried", "fixed", "still_bad": [(idx, reason, src)]}.
+    စာသားလွတ်နေတဲ့လိုင်းတွေက ပြန်ပြန်လို့မရလို့ still_bad ထဲ တန်းဝင်မယ်.
+    """
+    n = len(translations)
+    bad = {}
+    for i, sg in enumerate(translations):
+        r = _qc_bad_reason(sg.get("text", ""))
+        if r:
+            bad[i] = r
+    report = {"checked": n, "bad_initial": len(bad),
+              "bad_ratio": (len(bad) / n) if n else 0.0,
+              "retried": [], "fixed": [], "still_bad": []}
+    if not bad:
+        return translations, report
+    sys = _qc_retranslate_sys(glossary)
+    total = len(bad)
+    for k, (i, reason) in enumerate(bad.items()):
+        src = translations[i].get("src", "") or translations[i].get("text", "")
+        if not src.strip():
+            # ပြန်စရာမူရင်းစာသားတောင် မရှိဘူး
+            report["still_bad"].append((i, reason, ""))
+            if progress_cb:
+                progress_cb((k + 1) / total)
+            continue
+        ok = False
+        for _ in range(max_retries):
+            try:
+                res = _gemini_call(api_key, model_id, sys,
+                                   json.dumps([{"id": 0, "text": src}],
+                                              ensure_ascii=False))
+                if res and isinstance(res[0], dict) and res[0].get("text"):
+                    new_text = str(res[0]["text"]).strip()
+                    if not _qc_bad_reason(new_text):
+                        translations[i]["text"] = new_text
+                        ok = True
+                        break
+            except Exception:
+                pass
+        report["retried"].append(i)
+        if ok:
+            report["fixed"].append(i)
+        else:
+            report["still_bad"].append(
+                (i, _qc_bad_reason(translations[i].get("text", "")) or reason,
+                 src[:80]))
+        if progress_cb:
+            progress_cb((k + 1) / total)
+    return translations, report
+
+
 def _reset_review_keys(S):
     """ဘာသာပြန် အသစ်ရတိုင်း review textarea + quick-fix key တွေ ရှင်း
     (အဟောင်း widget state က စာအသစ်ကို မဖုံးစေဖို့)."""
@@ -1443,6 +1521,208 @@ def _reset_review_keys(S):
         del S["review_text"]
     for k in [k for k in S.keys() if k.startswith("fixline_")]:
         del S[k]
+
+
+# ------------------------------------------------- ⚡ Auto mode (တစ်ချက်နှိပ် အပြီးအစီး)
+_AUTO_SPEEDUP = 1.3
+_AUTO_QC_BREAK_RATIO = 0.30
+
+
+def _auto_ui(S, api_key, groq_key, assembly_key, model_id, voice,
+             use_fallback, glossary, auto_merge):
+    """⚡ Auto mode: ဗီဒီယိုတင် → ခလုတ်တစ်ချက် → အပြီးအစီး."""
+    import streamlit as st
+    _spidey_card_open("⚡", "Auto — တစ်ချက်နှိပ်ပြီး အပြီးလုပ်")
+    # --- ဖိုင်တင် (ရွေးတာနဲ့ အသံထုတ်ထား)
+    up = st.file_uploader("MP4 / MOV / WEBM ဖိုင်ရွေးပါ",
+                          type=["mp4", "mov", "webm"], key="auto_up")
+    if S.video_path:
+        st.info(f"📁 {os.path.basename(S.video_path)} — {S.duration:.1f} စက္ကန့်")
+    if up is not None and S.get("_auto_up_name") != up.name:
+        run_id = uuid.uuid4().hex[:8]
+        rd = os.path.join(WORK_DIR, run_id)
+        os.makedirs(rd, exist_ok=True)
+        vpath = os.path.join(rd, up.name)
+        with open(vpath, "wb") as f:
+            f.write(up.getbuffer())
+        wpath = os.path.join(rd, "audio.mp3")
+        with st.spinner("ffmpeg နဲ့ အသံထုတ်နေတယ်..."):
+            run(["ffmpeg", "-y", "-v", "error", "-i", vpath,
+                 "-ar", "16000", "-ac", "1", "-b:a", "32k", wpath])
+            d = dur(vpath)
+        S.update(run_id=run_id, video_path=vpath, audio_path=wpath, duration=d,
+                 src_segments=None, translations=None, final_segments=None,
+                 fitted=None, fit_report=None, out_mp4=None, out_mp3=None,
+                 auto_mp3=None, auto_done=False, auto_report=None,
+                 dl_base=os.path.splitext(up.name)[0], _auto_up_name=up.name)
+        st.toast(f"✅ အသံထုတ်ပြီးပြီ — ဗီဒီယို {d:.1f} စက္ကန့်")
+        st.rerun()
+    # --- မူရင်းဘာသာစကား
+    _lang_label = st.pills(
+        "🎙️ မူရင်းဘာသာစကား",
+        [lbl for lbl, _ in _SRC_LANGS],
+        selection_mode="single",
+        default=[lbl for lbl, _ in _SRC_LANGS][0],
+        key="auto_src_lang",
+        help="Whisper က ဘာသာစကား မှားသိတတ်တယ် — ဗီဒီယိုက ဘာဘာသာစကားလဲ "
+             "သိရင် ဒီမှာ ရွေးလိုက်။ မသိရင် Auto ထားခဲ့။")
+    _lang_code = dict(_SRC_LANGS)[_lang_label]
+    # --- ခလုတ်
+    _has_keys = bool((groq_key or assembly_key) and api_key)
+    if not (groq_key or assembly_key):
+        st.warning("⚠️ Groq / AssemblyAI API Key တစ်ခုခု ထည့်မှ စာသားထုတ်လို့ရမယ် "
+                   "(ဘယ်ဘက် sidebar)။")
+    if not api_key:
+        st.warning("⚠️ Gemini API key ထည့်မှ ဘာသာပြန်လို့ရမယ် (ဘယ်ဘက် sidebar)။")
+    _go = st.button("⚡ တစ်ချက်နှိပ်ပြီး အပြီးလုပ်", type="primary",
+                    use_container_width=True,
+                    disabled=not (S.video_path and _has_keys))
+    if _go:
+        _auto_run(S, api_key, groq_key, assembly_key, model_id, voice,
+                  use_fallback, glossary, auto_merge, _lang_code)
+    _spidey_card_close()
+    # --- ရလဒ်
+    if S.get("auto_done") and S.out_mp4 and os.path.isfile(S.out_mp4):
+        _auto_results(S)
+
+
+def _auto_run(S, api_key, groq_key, assembly_key, model_id, voice,
+              use_fallback, glossary, auto_merge, lang_code):
+    """Auto pipeline အစအဆုံး (progress နဲ့). ပျက်ရင် ဘယ်အဆင့်လဲ ပြပြီး ရပ်."""
+    import streamlit as st
+    prog = st.progress(0.0)
+    msg = st.empty()
+
+    def setp(f, t):
+        prog.progress(max(0.0, min(1.0, f)))
+        msg.text(t)
+
+    try:
+        # 1/6 transcribe
+        setp(0.03, "🎤 1/6 — အသံမှ စာသားထုတ်နေတယ်...")
+        data, _provider = transcribe_with_fallback(
+            S.audio_path, groq_key or None,
+            assembly_key if use_fallback else None, language=lang_code)
+        segs = [{"start": x["start"], "end": x["end"], "text": x["text"]}
+                for x in data.get("segments", [])]
+        if auto_merge and segs:
+            segs = merge_tiny_segments(segs)
+        if not segs:
+            raise ValueError("စာသားမတွေ့ဘူး — ဗီဒီယိုမှာ စကားပြောအသံ ရှိမရှိ စစ်ပါ")
+        S.src_segments, S.lang = segs, data.get("language", "")
+
+        # 2/6 translate
+        _mid = model_id.strip() or GEMINI_MODEL_DEFAULT
+        setp(0.22, f"🌐 2/6 — ဘာသာပြန်နေတယ် ({len(segs)} ပိုင်း)...")
+        result, _failed = gemini_translate(
+            api_key, segs, _mid,
+            progress_cb=lambda f: setp(0.22 + 0.20 * f, "🌐 2/6 — ဘာသာပြန်နေတယ်..."),
+            glossary=glossary, recap=False)
+
+        # 3/6 quality check + ပြန်ပြန်
+        setp(0.44, "🔍 3/6 — အရည်အသွေးစစ်နေတယ်...")
+        result, qc = qc_retranslate(
+            api_key, _mid, result, glossary=glossary,
+            progress_cb=lambda f: setp(
+                0.44 + 0.08 * f, "🔍 3/6 — ပျက်တဲ့လိုင်းတွေ ပြန်ပြန်နေတယ်..."))
+        if qc["bad_ratio"] > _AUTO_QC_BREAK_RATIO:
+            raise ValueError(
+                f"စာကြောင်း {qc['bad_initial']}/{qc['checked']} ခု ပျက်နေတယ် — "
+                "မူရင်းဘာသာစကား ရွေးတာ မှားနေနိုင်တယ်။ "
+                "Manual mode အဆင့် ၂ မှာ စစ်ကြည့်ပါ။")
+        S.translations = result
+        S.final_segments = [dict(x) for x in result]
+        S.auto_report = qc
+        _reset_review_keys(S)
+
+        # 4/6 TTS (သဘာဝအရှည် — render က video ချိန်ပေးမယ်)
+        setp(0.54, "🔊 4/6 — မြန်မာအသံထုတ်နေတယ်...")
+        work_nat = os.path.join(WORK_DIR, S.run_id, "natural")
+        natural, failed_n = tts_natural(
+            S.final_segments, voice, work_nat,
+            progress_cb=lambda f, i, t: setp(
+                0.54 + 0.20 * f, f"🔊 4/6 — အပိုင်း {i + 1}/{len(S.final_segments)}"))
+        if not natural:
+            raise ValueError("အသံထုတ်မရဘူး — network / VPN စစ်ပါ")
+        if failed_n:
+            msg.text(f"🔇 အသံထုတ်မရတဲ့အပိုင်း {len(failed_n)} ခု ကျော်သွားမယ်")
+
+        # 5/6 recap render (အမြဲဖွင့် — စာကြောင်းအလိုက် အတိုအရှည်ညှိ)
+        setp(0.76, "🎞️ 5/6 — video ကို narration အရှည်နဲ့ကိုက်အောင် ချိန်နေတယ်...")
+        work_rc = os.path.join(WORK_DIR, S.run_id, "recap")
+        tmp_out = os.path.join(work_rc, "recap_video.mp4")
+        _, timeline, _ = render_recap_video(
+            S.video_path, natural, S.duration, work_rc, tmp_out)
+
+        # 6/6 speedup 1.3x + finalize
+        setp(0.94, f"⚡ 6/6 — {_AUTO_SPEEDUP}x တင်ပြီး အပြီးသတ်နေတယ်...")
+        out = os.path.join(WORK_DIR, S.run_id, "dubbed_video.mp4")
+        sped = os.path.join(WORK_DIR, S.run_id, "spedup.mp4")
+        speedup_video(tmp_out, _AUTO_SPEEDUP, sped)
+        shutil.copyfile(sped, out)
+        subs = [{"start": x["start"] / _AUTO_SPEEDUP,
+                 "end": x["end"] / _AUTO_SPEEDUP,
+                 "text": x["text"]} for x in timeline]
+        amp3 = os.path.join(WORK_DIR, S.run_id, "dubbed_voiceover.mp3")
+        run(["ffmpeg", "-y", "-v", "error", "-i", out, "-vn",
+             "-c:a", "libmp3lame", "-b:a", "128k", amp3])
+        S.out_mp4, S.out_subs, S.auto_mp3 = out, subs, amp3
+        S.auto_done = True
+        setp(1.0, "✅ ပြီးပြီ!")
+    except Exception as e:
+        prog.empty()
+        msg.empty()
+        st.error(f"⛔ Auto ရပ်သွားတယ်: {e}")
+        st.info("💡 Manual mode မှာ ဒီဗီဒီယိုနဲ့ပဲ ဆက်လုပ်လို့ရတယ် "
+                "(ရထားတဲ့အဆင့်တွေ မှတ်ထားပြီးသား)")
+        st.stop()
+    prog.empty()
+    msg.empty()
+    st.toast("✅ Auto ပြီးပြီ!")
+    st.rerun()
+
+
+def _auto_results(S):
+    """Auto ရလဒ်: quality report + MP4 ခလုတ်အကြီး + MP3/SRT အသေး."""
+    import streamlit as st
+    st.success("✅ Auto ပြီးပြီ! အောက်မှာ download ချလို့ရပြီ")
+    qc = S.get("auto_report") or {}
+    if qc.get("checked"):
+        _bits = [f"စာကြောင်း {qc['checked']} ခု စစ်ပြီး"]
+        if qc.get("fixed"):
+            _bits.append(f"{len(qc['fixed'])} လိုင်း ပြန်ပြင်ခဲ့တယ် ✅")
+        if qc.get("still_bad"):
+            _bits.append(f"⚠️ {len(qc['still_bad'])} လိုင်း ကျန်နေတယ်")
+        with st.expander("🔍 အရည်အသွေးစစ်ချက် ကြည့်",
+                         expanded=bool(qc.get("still_bad"))):
+            st.caption(" · ".join(_bits))
+            for (i, reason, src) in qc.get("still_bad", []):
+                st.write(f"#{i + 1} — {reason}")
+                if src:
+                    st.caption(f"မူရင်း: {src[:80]}")
+            if qc.get("still_bad"):
+                st.caption("ကျန်တဲ့လိုင်းတွေ Manual mode အဆင့် ၄ မှာ ပြင်လို့ရတယ်")
+    if S.get("_dl_for") != S.run_id:
+        _base = (S.get("dl_base") or "audio").strip() or "audio"
+        S["dl_name"] = f"{_base}_dubbed"
+        S["_dl_for"] = S.run_id
+    st.text_input("📝 ဖိုင်နာမည်", key="dl_name",
+                  help="download ချမယ့်အမည် — .mp4/.mp3/.srt ကို သူ့အလိုလို ထည့်ပေးမယ်")
+    _dl = re.sub(r'[\\/:*?"<>|]', "_", (S.get("dl_name") or "").strip()) or "dubbed"
+    with open(S.out_mp4, "rb") as f:
+        st.download_button(f"⬇️ Dubbed MP4 ({_AUTO_SPEEDUP}x)", f,
+                           file_name=f"{_dl}.mp4", mime="video/mp4",
+                           type="primary", use_container_width=True)
+    _c1, _c2 = st.columns(2)
+    if S.get("auto_mp3") and os.path.isfile(S.auto_mp3):
+        with _c1, open(S.auto_mp3, "rb") as f:
+            st.download_button("⬇️ MP3 (အသံသက်သက်)", f,
+                               file_name=f"{_dl}.mp3", mime="audio/mpeg",
+                               use_container_width=True)
+    with _c2:
+        st.download_button("⬇️ SRT", segments_to_srt(S.out_subs or []),
+                           file_name=f"{_dl}.srt", mime="text/plain",
+                           use_container_width=True)
 
 
 # ------------------------------------------------------------------ UI
@@ -1473,6 +1753,12 @@ def main():
     # ---------------------------------------------------------- sidebar
     with st.sidebar:
         st.markdown("### 🕷️ Spidey Control")
+        st.radio("🎛️ Mode",
+                 ["🔧 Manual (တစ်ဆင့်ချင်း)", "⚡ Auto (တစ်ချက်နှိပ်)"],
+                 key="app_mode",
+                 help="Manual = တစ်ဆင့်ချင်းကိုယ်တိုင်စစ်ပြီးလုပ်; "
+                      "Auto = ဗီဒီယိုတင်ပြီး ခလုတ်တစ်ချက်နဲ့ အပြီးအစီး")
+        st.divider()
         st.caption("Key တွေ၊ အသံနဲ့ ရွေးချယ်စရာတွေ ဒီမှာပြင်")
         st.markdown("#### 🔑 API Keys")
         localS = _local_storage(st)
@@ -1590,12 +1876,8 @@ def main():
                                         "အလိုအလျောက်ဆက်လုပ်မယ် (AssemblyAI key လိုတယ်)။ "
                                         "ပိတ်ထားရင် Groq ပျက်တာနဲ့ ရပ်မယ်")
         st.markdown("##### 🎬 Recap Studio")
-        recap_style = st.checkbox(
-            "🎬 Recap စတိုင်နဲ့ ဘာသာပြန်", value=False,
-            help="စာကြောင်းတိုင်းဘာသာပြန်တာအစား movie recap narrator ပြောသလို "
-                 "သဘာဝကျတဲ့ ပြောစကားမြန်မာလို ပြန်ရေးမယ် — အဆင့် ၃ မှာသုံးမယ် "
-                 "(🎙️ Narrator ပြန်ပြော mode မှာ အကျိုးမသက်ရောက်ဘူး — သူက "
-                 "video ကြည့်ပြီး သက်သက် script ရေးတာ)။ ပိတ်ထားရင် အရင်အတိုင်း")
+        # 🎬 recap-style UI ဝှက်ထားတယ် (code ကျန်တယ်) — အခု စာကြောင်းချင်းပြန်ပဲ
+        recap_style = False
         recap_render = st.checkbox(
             "🎞️ Recap render — video ကို narration အရှည်နဲ့ကိုက်အောင် ချိန်",
             value=True,
@@ -1639,6 +1921,16 @@ def main():
         unsafe_allow_html=True,
     )
 
+    # ⚡ Auto mode: ဗီဒီယိုတင် → တစ်ချက်နှိပ် အပြီးအစီး (manual wizard ကို ကျော်)
+    if str(S.get("app_mode", "🔧 Manual (တစ်ဆင့်ချင်း)")).startswith("⚡"):
+        _auto_ui(S, api_key, groq_key, assembly_key,
+                 model_id, voice, use_fallback, glossary, auto_merge)
+        st.markdown(
+            '<div class="spidey-foot">🕷️ Audio Dub Studio — '
+            "your friendly neighborhood dubbing tool 🕸️</div>",
+            unsafe_allow_html=True)
+        return
+
     mode = st.radio("အရင်းအမြစ်", ["🎬 ဗီဒီယို", "📄 SRT ဖိုင်"], horizontal=True,
                     key="src_mode",
                     help="ဗီဒီယိုတင်ပြီး အစအဆုံးလုပ်မလား၊ "
@@ -1657,28 +1949,16 @@ def main():
     S["_mode"] = mode
     is_video = (mode == "🎬 ဗီဒီယို")
 
-    # 🎙️ dub ပုံစံ: စာကြောင်းချင်းပြန် (အဟောင်း) / narrator ပြန်ပြော (အသစ်)
-    # ဗီဒီယိုမုဒ်အတွက်သာ — narrator က frame တွေ လိုလို့
+    # 🎙️ narrator UI ဝှက်ထားတယ် (code ကျန်တယ်) — အခု စာကြောင်းချင်းပြန်ပဲ
     narr = False
-    if is_video:
-        narr_choice = st.radio(
-            "🎙️ Dub ပုံစံ",
-            ["📝 စာကြောင်းချင်းပြန်", "🎙️ Narrator ပြန်ပြော"],
-            horizontal=True, key="narr_mode_radio",
-            help="စာကြောင်းချင်းပြန် = မူရင်းစကားအတိုင်း တစ်ကြောင်းချင်း မြန်မာလို; "
-                 "Narrator ပြန်ပြော = AI က scene တွေကြည့်ပြီး third-person "
-                 "နားလည်လွယ်အောင် ဇာတ်လမ်းပြန်ပြောတာ")
-        if S.get("_narr_mode") is not None and S["_narr_mode"] != narr_choice:
-            for k in ("scenes", "scene_descs", "translations",
-                      "final_segments", "fitted", "fit_report",
-                      "out_mp4", "out_mp3"):
-                if k in S:
-                    del S[k]
-            _reset_review_keys(S)
-            S["_narr_mode"] = narr_choice
-            st.rerun()
-        S["_narr_mode"] = narr_choice
-        narr = narr_choice.startswith("🎙️")
+    if str(S.get("_narr_mode", "")).startswith("🎙️"):
+        for k in ("scenes", "scene_descs", "translations",
+                  "final_segments", "fitted", "fit_report",
+                  "out_mp4", "out_mp3"):
+            if k in S:
+                del S[k]
+        _reset_review_keys(S)
+    S["_narr_mode"] = "📝 စာကြောင်းချင်းပြန်"
     _spidey_steps(S, is_video, narr)
 
     if S["wizard_step"] == 1:
