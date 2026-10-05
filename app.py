@@ -1845,8 +1845,8 @@ def main():
         st.divider()
         st.markdown("#### 🎚️ အသံ ဆက်တင်")
         model_id = st.text_input("Gemini model", value=GEMINI_MODEL_DEFAULT)
-        max_speed = st.slider("အမြန်ဆုံးနှုန်း (အသံချုံ့တာ)", 1.0, 2.0, 1.3, 0.05,
-                              help="စာရှည်ရင် ဒီနှုန်းအထိ မြန်ပေးမယ်")
+        # 🎚️ အသံချုံ့ slider ဝှက်ထားတယ် — render mode မှာ အလုပ်မလုပ်လို့; 1.3x အသေ
+        max_speed = 1.3
         voice = st.selectbox("အသံ", [VOICE_MALE, VOICE_FEMALE],
                              format_func=lambda v: "🗣️ ကျား (Thiha)" if v == VOICE_MALE else "🗣️ မ (Nilar)")
         if st.button("🔊 အသံ စမ်းနားထောင်ရန်", use_container_width=True,
@@ -1866,11 +1866,8 @@ def main():
         # 🔗/✂️ UI ဝှက်ထားတယ် (code ကျန်တယ်) — render အမြဲသုံးတော့ မလိုတော့ဘူး
         auto_merge = False
         auto_shorten = False
-        use_fallback = st.checkbox("🔄 Groq ပျက်ရင် AssemblyAI နဲ့ အလိုအလျောက်ဆက်လုပ်",
-                                   value=True,
-                                   help="Groq က 403 IP-block ထိတဲ့အခါ AssemblyAI key နဲ့ "
-                                        "အလိုအလျောက်ဆက်လုပ်မယ် (AssemblyAI key လိုတယ်)။ "
-                                        "ပိတ်ထားရင် Groq ပျက်တာနဲ့ ရပ်မယ်")
+        # 🔄 fallback checkbox ဖြုတ်လိုက်တယ် — Groq ပျက်ရင် အမြဲ AssemblyAI နဲ့ဆက်မယ်
+        use_fallback = True
         st.markdown("##### 🎬 Recap Studio")
         # 🎬 recap-style UI ဝှက်ထားတယ် (code ကျန်တယ်) — အခု စာကြောင်းချင်းပြန်ပဲ
         recap_style = False
