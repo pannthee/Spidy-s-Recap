@@ -1703,6 +1703,7 @@ def _auto_results(S):
     """Auto ရလဒ်: quality report + MP4 ခလုတ်အကြီး + MP3/SRT အသေး."""
     import streamlit as st
     st.success("✅ Auto ပြီးပြီ! အောက်မှာ download ချလို့ရပြီ")
+    st.video(S.out_mp4)  # ⬇️ မဒေါင်းခင် preview အရင်ကြည့်
     qc = S.get("auto_report") or {}
     if qc.get("checked"):
         _bits = [f"စာကြောင်း {qc['checked']} ခု စစ်ပြီး"]
@@ -2449,6 +2450,11 @@ def main():
             _has_out = ((S.out_mp4 and os.path.isfile(S.out_mp4)) or
                         (S.out_mp3 and os.path.isfile(S.out_mp3)))
             if _has_out or S.final_segments:
+                # 👀 မဒေါင်းခင် preview အရင်ကြည့်
+                if S.out_mp4 and os.path.isfile(S.out_mp4):
+                    st.video(S.out_mp4)
+                elif S.out_mp3 and os.path.isfile(S.out_mp3):
+                    st.audio(S.out_mp3)
                 # ဖိုင်အသစ်တင်တိုင်း အမည်အကြံကို refresh (ရိုက်ထားတာကို မဖျက်)
                 if S.get("_dl_for") != S.run_id:
                     _base = (S.get("dl_base") or "audio").strip() or "audio"
