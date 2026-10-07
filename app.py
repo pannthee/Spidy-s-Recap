@@ -8,7 +8,7 @@ hard refresh ဆွဲလည်း မပျောက်ဘူး (server Secret
 
 Pipeline:
   1. MP4 တင် → ffmpeg နဲ့ audio ထုတ် (mp3 16k mono, 32k — Groq 25MB ကန့်သတ်ချက်နဲ့ကိုက်အောင်)
-  2. Groq Whisper API (whisper-large-v3-turbo) နဲ့ စာသားထုတ် (timestamp ပါ)
+  2. Groq Whisper API (whisper-large-v3) နဲ့ စာသားထုတ် (timestamp ပါ)
      ※ အရင်က local faster-whisper သုံးတာ — Streamlit Cloud ရဲ့ RAM (~1GB)
        ကန့်သတ်ချက်နဲ့ မကိုက်လို့ Groq API နဲ့ လဲထားတာ
      ※ Groq က 403 IP-block ထိရင် AssemblyAI နဲ့ အလိုအလျောက် fallback
@@ -243,7 +243,7 @@ div[data-testid="stHorizontalBlock"]:has(.wiz-bnav-col) > div {
                 st.rerun()
 
 GROQ_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
-GROQ_MODEL = "whisper-large-v3-turbo"  # sub-translator မှာ အလုပ်ဖြစ်နေတဲ့ model
+GROQ_MODEL = "whisper-large-v3"  # turbo က CJK hallucination (Korean မှားရေး + စာသားထပ်) များလို့ full model ပြောင်း — sub-translator နည်းတူ (2026-10-08)
 # Whisper က ဘာသာစကား auto-detect မှားတတ်လို့ (ဥပမာ English ကို Tamil လို့ ထင်တာ)
 # သုံးသူ တိတိကျကျ ရွေးနိုင်အောင် — (ပြသမယ့်အမည်, Whisper code)
 _SRC_LANGS = [
@@ -315,7 +315,7 @@ def transcribe_audio(audio_path, api_key, language=None, on_chunk=None):
     အဲ့ဘာသာစကားအတိုင်း နားထောင်မယ်။ None ဆို auto-detect (အရင်အတိုင်း)။
 
     sub-translator မှာ အလုပ်ဖြစ်နေတဲ့ request ပုံစံအတိုင်း
-    (whisper-large-v3-turbo, verbose_json) — Streamlit Cloud RAM ကန့်သတ်ချက်ကြောင့်
+    (whisper-large-v3, verbose_json) — Streamlit Cloud RAM ကန့်သတ်ချက်ကြောင့်
     local faster-whisper အစား ဒီ API ကို သုံးထားတာ။
 
     အသံ 20MB ကျော်ရင် (အပိုင်းရှည်) အပိုင်းခွဲနားထောင်ပြီး ပြန်ဆက်တယ် —
@@ -406,7 +406,7 @@ def _transcribe_chunked(audio_path, api_key, language=None, on_chunk=None):
 
 
 # ------------------------------------------------- step 2b: AssemblyAI fallback
-# Groq (whisper-large-v3-turbo) က 403 IP-block ထိတဲ့အခါ သုံးတဲ့ fallback.
+# Groq (whisper-large-v3) က 403 IP-block ထိတဲ့အခါ သုံးတဲ့ fallback.
 # အဆင့်တွေ: file upload → transcript request → poll → words → segments.
 _AAI_BASE = "https://api.assemblyai.com/v2"
 
