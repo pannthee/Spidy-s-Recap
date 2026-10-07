@@ -2633,6 +2633,14 @@ def main():
             elif not api_key:
                 st.warning("⚠️ Gemini API key ထည့်မှ ဘာသာပြန်လို့ရမယ် (ဘယ်ဘက် sidebar)။")
             else:
+                _drama_name_m = st.text_input(
+                    "🎭 ဇာတ်လမ်း အမည်",
+                    key="drama_name",
+                    placeholder="ဥပမာ: 颠倒世界 (အပိုင်းခွဲလုပ်မှ ထည့်)",
+                    help="ဇာတ်လမ်းရှည်ကို အပိုင်းခွဲလုပ်ရင် ဒီနာမည်တူတူ ထည့်ထား — "
+                         "ဇာတ်ကောင်နာမည်တွေ အပိုင်းတိုင်း တစ်မျိုးတည်းဖြစ်အောင် "
+                         "မှတ်ဉာဏ် share သုံးမယ်")
+                _drama_name_m = (_drama_name_m or "").strip()
                 _bc3, _ = st.columns([1, 2])
                 with _bc3:
                     _go3 = st.button("🌐 သဘာဝကျတဲ့ ပြောစကားမြန်မာလို ပြန်ရန်",
@@ -2640,10 +2648,19 @@ def main():
                 if _go3:
                     prog = st.progress(0.0, "Gemini နဲ့ ဘာသာပြန်နေတယ်...")
                     try:
+                        _mid3 = model_id.strip() or GEMINI_MODEL_DEFAULT
+                        _mem3 = (load_story_memory(_drama_name_m)
+                                 if _drama_name_m else None)
+                        if _drama_name_m and not _mem3:
+                            prog.progress(0.05, "🧠 ဇာတ်ကောင်မှတ်ဉာဏ် တည်နေတယ်...")
+                            _mem3 = build_story_memory(api_key, _mid3,
+                                                       S.src_segments)
+                            save_story_memory(_drama_name_m, _mem3)
                         result, failed = gemini_translate(
-                            api_key, S.src_segments, model_id.strip() or GEMINI_MODEL_DEFAULT,
-                            progress_cb=lambda f: prog.progress(f), glossary=glossary,
-                            recap=recap_style)
+                            api_key, S.src_segments, _mid3,
+                            progress_cb=lambda f: prog.progress(f),
+                            glossary=glossary, recap=recap_style,
+                            story_memory=_mem3)
                     except Exception as e:
                         st.error(f"ဘာသာပြန်တာ ပျက်သွားတယ်: {e}")
                         st.stop()
@@ -2715,6 +2732,27 @@ def main():
                     S.final_segments = parse_review_text(raw)
                     S.fitted, S.out_mp4, S.out_mp3 = None, None, None
                     S.recap_timeline, S.recap_report, S.out_subs = None, None, None
+                    # 🎭 drama memory: ကိုယ်တိုင်ပြင်ထားတဲ့ မြန်မာနာမည်တွေ မှတ်
+                    _drama_name_m4 = (S.get("drama_name") or "").strip()
+                    if _drama_name_m4 and api_key:
+                        with st.spinner("🧠 မှတ်ဉာဏ်မှာ နာမည်တွေ သိမ်းနေတယ်..."):
+                            _src_by_start = {
+                                round(t.get("start", 0), 2): t.get("src", "")
+                                for t in (S.translations or [])}
+                            _pairs = [{
+                                "start": fs["start"], "end": fs["end"],
+                                "src": _src_by_start.get(round(fs["start"], 2),
+                                                        ""),
+                                "text": fs["text"]}
+                                for fs in S.final_segments]
+                            _mem4 = (load_story_memory(_drama_name_m4) or
+                                     {"characters": [], "places": [],
+                                      "terms": []})
+                            _mem4 = update_story_memory(
+                                api_key,
+                                model_id.strip() or GEMINI_MODEL_DEFAULT,
+                                _mem4, _pairs)
+                            save_story_memory(_drama_name_m4, _mem4)
                     st.toast(f"✅ {len(S.final_segments)} ပိုင်း အတည်ပြုပြီးပြီ")
                     S["wizard_step"] = 5
                     st.rerun()
