@@ -308,7 +308,7 @@ def silence(path, seconds, sr=24000):
 
 
 # ------------------------------------------------------- step 2: transcribe
-def transcribe_audio(audio_path, api_key, language=None):
+def transcribe_audio(audio_path, api_key, language=None, on_chunk=None):
     """Groq Whisper API နဲ့ transcribe လုပ် → {'language':..., 'segments':[{'start','end','text'}]}.
 
     language: Whisper ISO code (ဥပမာ "en") — ပေးရင် auto-detect မလုပ်ဘဲ
@@ -317,12 +317,20 @@ def transcribe_audio(audio_path, api_key, language=None):
     sub-translator မှာ အလုပ်ဖြစ်နေတဲ့ request ပုံစံအတိုင်း
     (whisper-large-v3-turbo, verbose_json) — Streamlit Cloud RAM ကန့်သတ်ချက်ကြောင့်
     local faster-whisper အစား ဒီ API ကို သုံးထားတာ။
+
+    အသံ 20MB ကျော်ရင် (အပိုင်းရှည်) အပိုင်းခွဲနားထောင်ပြီး ပြန်ဆက်တယ် —
+    on_chunk(i, n) ကို အပိုင်းတိုင်းပြီးတိုင်း ခေါ်တယ်။
     """
     import requests  # local import
     size = os.path.getsize(audio_path)
     if size > 20 * 1024 * 1024:
-        raise RuntimeError("အသံဖိုင် 20MB ကျော်နေတယ် — Groq က 25MB အထိပဲ လက်ခံတယ်။ "
-                           "ဗီဒီယိုအတိုလေးနဲ့ စမ်းကြည့်ပါ။")
+        return _transcribe_chunked(audio_path, api_key, language, on_chunk)
+    return _transcribe_single(audio_path, api_key, language)
+
+
+def _transcribe_single(audio_path, api_key, language=None):
+    """ဖိုင်တစ်ခုတည်း Groq ကို ပို့ (20MB အောက်)."""
+    import requests  # local import
     with open(audio_path, "rb") as f:
         data = f.read()
     files = {"file": (os.path.basename(audio_path), data, "audio/mpeg")}
@@ -353,6 +361,48 @@ def transcribe_audio(audio_path, api_key, language=None):
         segs.append({"start": float(s.get("start") or 0),
                      "end": float(s.get("end") or 0), "text": text})
     return {"language": body.get("language", ""), "segments": segs}
+
+
+def _transcribe_chunked(audio_path, api_key, language=None, on_chunk=None):
+    """အသံရှည် (>20MB) ကို ~12MB အပိုင်းတွေ ခွဲ → တစ်ခုချင်း Groq → timestamp ပြန်ဆက်.
+
+    sub-translator ရဲ့ _transcribe_chunked ပုံစံ (port) + အပိုင်းဆက်နေရာ
+    (+1s overlap) မှာ စာသားထပ်နေတာ ဖယ်တယ်။
+    """
+    total = dur(audio_path) or 0
+    CHUNK_SEC = 3000.0  # 32kbps mono → ~12MB/ခု (Groq 25MB အောက် safe)
+    n = max(2, int(total // CHUNK_SEC) + 1)
+    step = total / n
+    tmpdir = os.path.dirname(audio_path)
+    all_segs, lang = [], ""
+    for i in range(n):
+        start = i * step
+        chunk = os.path.join(tmpdir, f"_tchunk{i}.mp3")
+        run(["ffmpeg", "-y", "-v", "error", "-ss", f"{start:.2f}",
+             "-t", f"{step + 1:.2f}", "-i", audio_path, "-c", "copy", chunk])
+        try:
+            data = _transcribe_single(chunk, api_key, language)
+        finally:
+            if os.path.isfile(chunk):
+                os.remove(chunk)
+        if i == 0:
+            lang = data.get("language", "")
+        if on_chunk:
+            on_chunk(i + 1, n)
+        for s in data.get("segments", []):
+            s = dict(s)
+            s["start"] = float(s.get("start") or 0) + start
+            s["end"] = float(s.get("end") or 0) + start
+            all_segs.append(s)
+    all_segs.sort(key=lambda s: s["start"])
+    # overlap ကြောင့် အပိုင်းဆက်မှာ စာသားအတူတူ ထပ်ပါတာ ဖယ်
+    deduped = []
+    for s in all_segs:
+        if (deduped and abs(s["start"] - deduped[-1]["start"]) < 0.5
+                and s["text"] == deduped[-1]["text"]):
+            continue
+        deduped.append(s)
+    return {"language": lang, "segments": deduped}
 
 
 # ------------------------------------------------- step 2b: AssemblyAI fallback
@@ -465,16 +515,17 @@ def transcribe_assemblyai(audio_path, api_key, language=None, progress_cb=None,
 
 
 def transcribe_with_fallback(audio_path, groq_key=None, assembly_key=None,
-                             language=None, on_note=None):
+                             language=None, on_note=None, on_chunk=None):
     """Groq အရင်ကြိုး → ပျက်ရင် AssemblyAI (key ရှိရင်).
 
     Returns: (data, provider) — provider: "groq" | "assemblyai".
     နှစ်ခုလုံးမရရင် နောက်ဆုံး error ကို raise လုပ်တယ်.
+    on_chunk(i, n): အသံရှည်လို့ အပိုင်းခွဲနားထောင်တဲ့အခါ progress.
     """
     last_err = None
     if groq_key:
         try:
-            return transcribe_audio(audio_path, groq_key, language), "groq"
+            return transcribe_audio(audio_path, groq_key, language, on_chunk), "groq"
         except Exception as e:
             last_err = e
             if on_note:
@@ -593,16 +644,19 @@ def _glossary_prompt(pairs):
 
 
 def gemini_translate(api_key, segments, model_id, progress_cb=None, glossary=None,
-                   recap=False):
+                   recap=False, story_memory=None):
     """segments: [{'start','end','text'}] → [{'start','end','src','text'}].
 
     ပြန်မရတဲ့ အပိုင်းတွေက မူရင်းစာသားအတိုင်း ကျန်ပြီး failed_ids မှာ မှတ်ထားတယ်။
     recap=True ဆို စာကြောင်းတိုင်းဘာသာပြန်တာအစား recap narrator စတိုင်နဲ့ ပြန်ရေးတယ်။
+    story_memory: build_story_memory/update_story_memory ရဲ့ dict — ဇာတ်ကောင်
+    နာမည်တွေ အပိုင်းတိုင်း တသမတ်တည်း ဖြစ်အောင်.
     """
     items = [{"id": i, "text": s["text"]} for i, s in enumerate(segments)]
     out = {}
     failed = []
-    _sys = (_RECAP_SYS if recap else _TRANSLATE_SYS) + _glossary_prompt(glossary)
+    _sys = ((_RECAP_SYS if recap else _TRANSLATE_SYS)
+            + _story_memory_block(story_memory) + _glossary_prompt(glossary))
     BATCH = 25
     batches = [items[i:i + BATCH] for i in range(0, len(items), BATCH)]
     for b, batch in enumerate(batches):
@@ -1465,19 +1519,20 @@ def _qc_bad_reason(text):
     return None
 
 
-def _qc_retranslate_sys(glossary=None):
+def _qc_retranslate_sys(glossary=None, story_memory=None):
     return (
         "You translate ONE video subtitle line into natural SPOKEN Burmese (Myanmar). "
         "Output ONLY Myanmar (Burmese) Unicode script — never mix in Tamil, "
         "Devanagari/Hindi, Thai, Chinese, Korean, Japanese, Latin, or any other "
         "non-Myanmar script, not even for names. Keep the meaning, keep it concise. "
         "Return ONLY a JSON object with key 'text'."
-        + _HUMAN_STYLE + _glossary_prompt(glossary)
+        + _HUMAN_STYLE + _story_memory_block(story_memory)
+        + _glossary_prompt(glossary)
     )
 
 
 def qc_retranslate(api_key, model_id, translations, glossary=None,
-                   progress_cb=None, max_retries=2):
+                   progress_cb=None, max_retries=2, story_memory=None):
     """ဘာသာပြန်ပြီးသားလိုင်းတွေ အရည်အသွေးစစ် → ပျက်တာတွေ တစ်ကြောင်းချင်း ပြန်ပြန်.
 
     → (translations, report). report: {"checked", "bad_initial", "bad_ratio",
@@ -1495,7 +1550,7 @@ def qc_retranslate(api_key, model_id, translations, glossary=None,
               "retried": [], "fixed": [], "still_bad": []}
     if not bad:
         return translations, report
-    sys = _qc_retranslate_sys(glossary)
+    sys = _qc_retranslate_sys(glossary, story_memory)
     total = len(bad)
     for k, (i, reason) in enumerate(bad.items()):
         src = translations[i].get("src", "") or translations[i].get("text", "")
@@ -1545,6 +1600,244 @@ _AUTO_SPEEDUP = 1.3
 _AUTO_QC_BREAK_RATIO = 0.30
 
 
+# ---------------- checkpoint / resume ----------------
+# Auto အဆင့်တိုင်း disk မှာ သိမ်း → tab ပိတ် / error တက်ရင် ခလုတ်ပြန်နှိပ်ရုံနဲ့
+# ရပ်တဲ့နေရာက ဆက် (ပြီးသားအဆင့် ကျော်).
+
+def _ckpt_path(run_id, name):
+    return os.path.join(WORK_DIR, run_id, "ckpt", name + ".json")
+
+
+def _ckpt_save(run_id, name, data):
+    d = os.path.dirname(_ckpt_path(run_id, name))
+    os.makedirs(d, exist_ok=True)
+    tmp = _ckpt_path(run_id, name) + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False)
+    os.replace(tmp, _ckpt_path(run_id, name))
+
+
+def _ckpt_load(run_id, name):
+    p = _ckpt_path(run_id, name)
+    if not os.path.isfile(p):
+        return None
+    try:
+        with open(p, encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
+def _ckpt_matches(ckpt, want):
+    """checkpoint က လက်ရှိ setting တွေနဲ့ ကိုက်လား (setting ပြောင်းရင် အသစ်စ)."""
+    if not isinstance(ckpt, dict):
+        return False
+    return all(ckpt.get(k) == v for k, v in want.items())
+
+
+def _video_fingerprint(video_path):
+    try:
+        return f"{os.path.basename(video_path)}::{os.path.getsize(video_path)}"
+    except Exception:
+        return ""
+
+
+def _find_prior_run(fingerprint):
+    """fingerprint တူတဲ့ မပြီးသေးတဲ့ run ရှာ → run_id (မရှိရင် None).
+
+    ပြီးသားဆိုရင် အသစ်စ (setting ပြောင်းပြီး ပြန်လုပ်ချင်လို့နေမယ်).
+    """
+    if not fingerprint or not os.path.isdir(WORK_DIR):
+        return None
+    for rid in sorted(os.listdir(WORK_DIR)):
+        rd = os.path.join(WORK_DIR, rid)
+        if not os.path.isdir(rd):
+            continue
+        meta = _ckpt_load(rid, "meta")
+        if meta and meta.get("fingerprint") == fingerprint:
+            if not os.path.isfile(os.path.join(rd, "dubbed_video.mp4")):
+                return rid
+    return None
+
+
+def _auto_adopt_run(S, run_id):
+    """အရင် run ရဲ့ ckpt တွေ S ထဲ ပြန်ထည့် (session အသစ် / tab ပြန်ဖွင့်)."""
+    meta = _ckpt_load(run_id, "meta") or {}
+    S.update(run_id=run_id,
+             video_path=meta.get("video_path"),
+             audio_path=meta.get("audio_path"),
+             duration=meta.get("duration", 0.0),
+             dl_base=meta.get("dl_base", ""),
+             _auto_up_name=meta.get("up_name", ""),
+             src_segments=None, translations=None, final_segments=None,
+             out_mp4=None, out_subs=None, auto_mp3=None,
+             auto_done=False, auto_report=None)
+    s2 = _ckpt_load(run_id, "s2_translate")
+    if s2 and s2.get("drama_name"):
+        S["drama_name"] = s2["drama_name"]
+
+
+def _qc_report_json(qc):
+    """qc report ကို JSON-serializable ဖြစ် (still_bad tuple → list)."""
+    qc = dict(qc or {})
+    qc["still_bad"] = [list(x) for x in (qc.get("still_bad") or [])]
+    return qc
+
+
+# ---------------- story memory (ဇာတ်ကောင်နာမည် တသမတ်တည်း) ----------------
+# ဇာတ်လမ်းရှည်ကို အပိုင်းခွဲလုပ်ရင် အပိုင်းတိုင်း နာမည်တစ်မျိုးတည်း ဖြစ်အောင်
+# drama တစ်ခုစာအတွက် ဇာတ်ကောင်/နေရာ မှတ်ဉာဏ် တစ်ခု share သုံး.
+MEM_DIR = os.path.join(WORK_DIR, "memories")
+
+
+def _mem_path(name):
+    safe = re.sub(r"[^\w\- ]", "", (name or "")).strip()[:60] or "drama"
+    return os.path.join(MEM_DIR, safe + ".json")
+
+
+def load_story_memory(name):
+    if not name:
+        return None
+    p = _mem_path(name)
+    if not os.path.isfile(p):
+        return None
+    try:
+        with open(p, encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
+def save_story_memory(name, mem):
+    if not name:
+        return
+    os.makedirs(MEM_DIR, exist_ok=True)
+    mem = dict(mem or {})
+    mem["drama"] = name
+    tmp = _mem_path(name) + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(mem, f, ensure_ascii=False, indent=1)
+    os.replace(tmp, _mem_path(name))
+
+
+def delete_story_memory(name):
+    try:
+        os.remove(_mem_path(name))
+    except Exception:
+        pass
+
+
+def _mem_fingerprint(mem):
+    if not mem:
+        return ""
+    try:
+        return hashlib.md5(json.dumps(mem.get("characters"), ensure_ascii=False,
+                                     sort_keys=True).encode()).hexdigest()[:12]
+    except Exception:
+        return ""
+
+
+def _story_memory_block(mem):
+    """translate / QC prompt ထဲ ထည့်မယ့် နာမည်စာရင်း."""
+    if not mem:
+        return ""
+    out = []
+    chars = [c for c in (mem.get("characters") or [])
+             if isinstance(c, dict) and c.get("src") and c.get("mm")]
+    if chars:
+        out.append("CHARACTER NAME MEMORY — use these EXACT Myanmar names every "
+                   "time these characters appear (do not re-transliterate them "
+                   "differently; if the manual Glossary below lists the same name, "
+                   "the Glossary wins):")
+        for c in chars:
+            out.append(f"- {c['src']} → {c['mm']}"
+                       + (f" ({c['role']})" if c.get("role") else ""))
+    for key, label in (("places", "PLACES"), ("terms", "TERMS")):
+        items = [e for e in (mem.get(key) or [])
+                 if isinstance(e, dict) and e.get("src") and e.get("mm")]
+        if items:
+            out.append(f"{label} — use these exact Myanmar forms:")
+            out += [f"- {e['src']} → {e['mm']}" for e in items]
+    return ("\n" + "\n".join(out) + "\n") if out else ""
+
+
+def build_story_memory(api_key, model_id, segments):
+    """transcript ဖတ် → {characters, places, terms} (source နာမည်တွေ).
+
+    မရရင် အလွတ်ပြန် (memory မပါဘဲ ဆက်လုပ်) — ဘယ်တော့မှ error မထုတ်.
+    """
+    full = "\n".join(s.get("text", "") for s in segments)
+    CH = 24000
+    chunks = [full[i:i + CH] for i in range(0, len(full), CH)] or [""]
+    mem = {"characters": [], "places": [], "terms": []}
+    sys = ("You read a video transcript and build a CAST/TERM MEMORY as JSON. "
+           "Return ONLY a JSON object with keys 'characters', 'places', 'terms'. "
+           "characters: [{\"src\": name exactly as in transcript, \"role\": short role}]. "
+           "places: [{\"src\": place name}]. terms: [{\"src\": recurring special term}]. "
+           "Include EVERY named character and place, even minor ones. "
+           "Source names only — no translation yet.")
+    for ci, ch in enumerate(chunks):
+        try:
+            payload = (f"CHUNK {ci + 1}/{len(chunks)}:\n{ch}\n\n"
+                       f"EXISTING MEMORY (merge into it, do not duplicate names):\n"
+                       f"{json.dumps(mem, ensure_ascii=False)}")
+            res = _gemini_call(api_key, model_id, sys, payload)
+        except Exception:
+            continue
+        if not isinstance(res, dict):
+            continue
+        for k in ("characters", "places", "terms"):
+            for e in (res.get(k) or []):
+                if (isinstance(e, dict) and e.get("src")
+                        and not any(x.get("src") == e["src"] for x in mem[k])):
+                    mem[k].append({"src": e["src"], "role": e.get("role", ""),
+                                   "mm": ""})
+    return mem
+
+
+def update_story_memory(api_key, model_id, mem, translations):
+    """ဘာသာပြန်ပြီးသား → ဇာတ်ကောင်တစ်ယောက်ချင်းရဲ့ မြန်မာနာမည် မှတ်.
+
+    မရရင် အဟောင်းအတိုင်း ပြန် — ဘယ်တော့မှ error မထုတ်.
+    """
+    mem = dict(mem or {"characters": [], "places": [], "terms": []})
+    pairs = "\n".join(
+        f"[{i}] SRC: {(t.get('src') or '')[:200]}\n"
+        f"    MM : {(t.get('text') or '')[:200]}"
+        for i, t in enumerate(translations))
+    CH = 24000
+    chunks = [pairs[i:i + CH] for i in range(0, len(pairs), CH)] or [""]
+    sys = ("You get source lines and their Myanmar translations. For each entry in "
+           "the NAME LIST below, find the Myanmar name actually used in the "
+           "translations. Return ONLY a JSON object with keys 'characters', "
+           "'places', 'terms' — each a list of {\"src\", \"mm\"}. Keep every input "
+           "entry (mm=\"\" if not found). Also ADD newly appeared named characters, "
+           "places or recurring terms with their Myanmar names.")
+    for ci, ch in enumerate(chunks):
+        try:
+            payload = (f"PART {ci + 1}/{len(chunks)}:\n{ch}\n\n"
+                       f"NAME LIST:\n{json.dumps(mem, ensure_ascii=False)}")
+            res = _gemini_call(api_key, model_id, sys, payload)
+        except Exception:
+            continue
+        if not isinstance(res, dict):
+            continue
+        for k in ("characters", "places", "terms"):
+            for e in (res.get(k) or []):
+                if not (isinstance(e, dict) and e.get("src")):
+                    continue
+                hit = next((x for x in mem.get(k, [])
+                            if x.get("src") == e["src"]), None)
+                if hit:
+                    if e.get("mm"):
+                        hit["mm"] = e["mm"]
+                else:
+                    mem.setdefault(k, []).append(
+                        {"src": e["src"], "role": e.get("role", ""),
+                         "mm": e.get("mm", "")})
+    return mem
+
+
 def _auto_ui(S, api_key, groq_key, assembly_key, model_id, voice,
              use_fallback, glossary, auto_merge):
     """⚡ Auto mode: ဗီဒီယိုတင် → ခလုတ်တစ်ချက် → အပြီးအစီး."""
@@ -1562,6 +1855,15 @@ def _auto_ui(S, api_key, groq_key, assembly_key, model_id, voice,
         vpath = os.path.join(rd, up.name)
         with open(vpath, "wb") as f:
             f.write(up.getbuffer())
+        # အရင်လုပ်လက်စ run ရှိလား (tab ပိတ် / session အသစ်) → ပြန်ဆက်
+        fp = _video_fingerprint(vpath)
+        prior = _find_prior_run(fp)
+        if prior:
+            shutil.rmtree(rd, ignore_errors=True)
+            _auto_adopt_run(S, prior)
+            st.toast("♻️ အရင်လုပ်လက်စ တွေ့လို့ ရပ်တဲ့နေရာက ပြန်ဆက်မယ် — "
+                     "ခလုတ်နှိပ်လိုက်ပါ")
+            st.rerun()
         wpath = os.path.join(rd, "audio.mp3")
         with st.spinner("ffmpeg နဲ့ အသံထုတ်နေတယ်..."):
             run(["ffmpeg", "-y", "-v", "error", "-i", vpath,
@@ -1572,6 +1874,9 @@ def _auto_ui(S, api_key, groq_key, assembly_key, model_id, voice,
                  fitted=None, fit_report=None, out_mp4=None, out_mp3=None,
                  auto_mp3=None, auto_done=False, auto_report=None,
                  dl_base=os.path.splitext(up.name)[0], _auto_up_name=up.name)
+        _ckpt_save(run_id, "meta", {"fingerprint": fp, "video_path": vpath,
+                   "audio_path": wpath, "duration": d,
+                   "dl_base": os.path.splitext(up.name)[0], "up_name": up.name})
         st.toast(f"✅ အသံထုတ်ပြီးပြီ — ဗီဒီယို {d:.1f} စက္ကန့်")
         st.rerun()
     # --- မူရင်းဘာသာစကား
@@ -1584,6 +1889,28 @@ def _auto_ui(S, api_key, groq_key, assembly_key, model_id, voice,
         help="Whisper က ဘာသာစကား မှားသိတတ်တယ် — ဗီဒီယိုက ဘာဘာသာစကားလဲ "
              "သိရင် ဒီမှာ ရွေးလိုက်။ မသိရင် Auto ထားခဲ့။")
     _lang_code = dict(_SRC_LANGS)[_lang_label]
+    # --- ဇာတ်လမ်း မှတ်ဉာဏ် (အပိုင်းခွဲ နာမည်တူအောင် — မထည့်လည်းရ) ---
+    drama_name = st.text_input(
+        "🎭 ဇာတ်လမ်း အမည်",
+        key="drama_name",
+        placeholder="ဥပမာ: 颠倒世界 (အပိုင်းခွဲလုပ်မှ ထည့်)",
+        help="ဇာတ်လမ်းရှည်ကို အပိုင်းခွဲလုပ်ရင် ဒီနာမည်တူတူ ထည့်ထား — "
+             "ဇာတ်ကောင်နာမည်တွေ အပိုင်းတိုင်း တစ်မျိုးတည်းဖြစ်အောင် "
+             "မှတ်ဉာဏ် share သုံးမယ်")
+    drama_name = (drama_name or "").strip()
+    _mem = load_story_memory(drama_name) if drama_name else None
+    if _mem:
+        _nch = len(_mem.get("characters") or [])
+        st.caption(f"📖 မှတ်ဉာဏ်ရှိနေတယ် — ဇာတ်ကောင် {_nch} ယောက် မှတ်ထားပြီး")
+        with st.expander("👀 မှတ်ဉာဏ်ကြည့် / ဖျက်"):
+            for c in (_mem.get("characters") or []):
+                if isinstance(c, dict) and c.get("src"):
+                    st.write(f"• {c['src']} → {c.get('mm') or '(မသိမ်းရသေး)'}"
+                             + (f" — {c['role']}" if c.get("role") else ""))
+            if st.button("🗑️ ဒီမှတ်ဉာဏ်ဖျက်", key="mem_del_btn"):
+                delete_story_memory(drama_name)
+                st.toast("🗑️ မှတ်ဉာဏ်ဖျက်ပြီးပြီ")
+                st.rerun()
     # --- ခလုတ်
     _has_keys = bool((groq_key or assembly_key) and api_key)
     if not (groq_key or assembly_key):
@@ -1596,7 +1923,7 @@ def _auto_ui(S, api_key, groq_key, assembly_key, model_id, voice,
                     disabled=not (S.video_path and _has_keys))
     if _go:
         _auto_run(S, api_key, groq_key, assembly_key, model_id, voice,
-                  use_fallback, glossary, auto_merge, _lang_code)
+                  use_fallback, glossary, auto_merge, _lang_code, drama_name)
     _spidey_card_close()
     # --- ရလဒ်
     if S.get("auto_done") and S.out_mp4 and os.path.isfile(S.out_mp4):
@@ -1604,8 +1931,13 @@ def _auto_ui(S, api_key, groq_key, assembly_key, model_id, voice,
 
 
 def _auto_run(S, api_key, groq_key, assembly_key, model_id, voice,
-              use_fallback, glossary, auto_merge, lang_code):
-    """Auto pipeline အစအဆုံး (progress နဲ့). ပျက်ရင် ဘယ်အဆင့်လဲ ပြပြီး ရပ်."""
+              use_fallback, glossary, auto_merge, lang_code, drama_name=""):
+    """Auto pipeline အစအဆုံး (progress နဲ့). ပျက်ရင် ဘယ်အဆင့်လဲ ပြပြီး ရပ်.
+
+    အဆင့်တိုင်း checkpoint သိမ်း → ခလုတ်ပြန်နှိပ်ရင် ပြီးသားအဆင့်တွေ ကျော်ပြီး
+    ရပ်တဲ့နေရာက ဆက်. drama_name ပေးထားရင် story memory share သုံး
+    (အပိုင်းခွဲ နာမည်တူအောင်).
+    """
     import streamlit as st
     prog = st.progress(0.0)
     msg = st.empty()
@@ -1614,75 +1946,148 @@ def _auto_run(S, api_key, groq_key, assembly_key, model_id, voice,
         prog.progress(max(0.0, min(1.0, f)))
         msg.text(t)
 
+    rid = S.run_id
+    _mid = model_id.strip() or GEMINI_MODEL_DEFAULT
+    _gloss_hash = hashlib.md5(str(glossary or "").encode()).hexdigest()[:12]
     try:
-        # 1/6 transcribe
-        setp(0.03, "🎤 1/6 — အသံမှ စာသားထုတ်နေတယ်...")
-        data, _provider = transcribe_with_fallback(
-            S.audio_path, groq_key or None,
-            assembly_key if use_fallback else None, language=lang_code)
-        segs = [{"start": x["start"], "end": x["end"], "text": x["text"]}
-                for x in data.get("segments", [])]
-        if auto_merge and segs:
-            segs = merge_tiny_segments(segs)
-        if not segs:
-            raise ValueError("စာသားမတွေ့ဘူး — ဗီဒီယိုမှာ စကားပြောအသံ ရှိမရှိ စစ်ပါ")
-        S.src_segments, S.lang = segs, data.get("language", "")
+        # ---- 1/6 transcribe (အသံရှည်ရင် အပိုင်းခွဲနားထောင်) ----
+        s1 = _ckpt_load(rid, "s1_transcribe")
+        if _ckpt_matches(s1, {"lang_code": lang_code or ""}):
+            segs, _slang = s1["segments"], s1.get("lang", "")
+            setp(0.06, f"⏭️ 1/6 — စာသားထုတ်ပြီးသား ({len(segs)} ပိုင်း) ကျော်မယ်")
+        else:
+            setp(0.03, "🎤 1/6 — အသံမှ စာသားထုတ်နေတယ်...")
+            data, _provider = transcribe_with_fallback(
+                S.audio_path, groq_key or None,
+                assembly_key if use_fallback else None, language=lang_code,
+                on_chunk=lambda i, n: setp(
+                    0.03 + 0.10 * i / n,
+                    f"🎤 1/6 — အသံအပိုင်း {i}/{n} နားထောင်နေတယ်..."))
+            segs = [{"start": x["start"], "end": x["end"], "text": x["text"]}
+                    for x in data.get("segments", [])]
+            if auto_merge and segs:
+                segs = merge_tiny_segments(segs)
+            if not segs:
+                raise ValueError("စာသားမတွေ့ဘူး — ဗီဒီယိုမှာ စကားပြောအသံ ရှိမရှိ စစ်ပါ")
+            _slang = data.get("language", "")
+            _ckpt_save(rid, "s1_transcribe",
+                       {"segments": segs, "lang": _slang,
+                        "lang_code": lang_code or ""})
+        S.src_segments, S.lang = segs, _slang
+        src_hash = hashlib.md5(
+            "".join(x["text"] for x in segs).encode()).hexdigest()[:12]
 
-        # 2/6 translate
-        _mid = model_id.strip() or GEMINI_MODEL_DEFAULT
-        setp(0.22, f"🌐 2/6 — ဘာသာပြန်နေတယ် ({len(segs)} ပိုင်း)...")
-        result, _failed = gemini_translate(
-            api_key, segs, _mid,
-            progress_cb=lambda f: setp(0.22 + 0.20 * f, "🌐 2/6 — ဘာသာပြန်နေတယ်..."),
-            glossary=glossary, recap=False)
+        # ---- story memory (drama_name ရှိမှ) ----
+        mem = load_story_memory(drama_name) if drama_name else None
+        mem_fp = _mem_fingerprint(mem)
 
-        # 3/6 quality check + ပြန်ပြန်
-        setp(0.44, "🔍 3/6 — အရည်အသွေးစစ်နေတယ်...")
-        result, qc = qc_retranslate(
-            api_key, _mid, result, glossary=glossary,
-            progress_cb=lambda f: setp(
-                0.44 + 0.08 * f, "🔍 3/6 — ပျက်တဲ့လိုင်းတွေ ပြန်ပြန်နေတယ်..."))
-        if qc["bad_ratio"] > _AUTO_QC_BREAK_RATIO:
-            raise ValueError(
-                f"စာကြောင်း {qc['bad_initial']}/{qc['checked']} ခု ပျက်နေတယ် — "
-                "မူရင်းဘာသာစကား ရွေးတာ မှားနေနိုင်တယ်။ "
-                "Manual mode အဆင့် ၂ မှာ စစ်ကြည့်ပါ။")
+        # ---- 2/6 translate ----
+        s2 = _ckpt_load(rid, "s2_translate")
+        if _ckpt_matches(s2, {"src_hash": src_hash, "model": _mid,
+                              "gloss": _gloss_hash, "mem_fp": mem_fp}):
+            result = s2["translations"]
+            setp(0.24, f"⏭️ 2/6 — ဘာသာပြန်ပြီးသား ({len(result)} ပိုင်း) ကျော်မယ်")
+        else:
+            if drama_name and not mem:
+                setp(0.20, "🧠 2/6 — ဇာတ်ကောင်မှတ်ဉာဏ် တည်နေတယ်...")
+                mem = build_story_memory(api_key, _mid, segs)
+                save_story_memory(drama_name, mem)
+                mem_fp = _mem_fingerprint(mem)
+            setp(0.22, f"🌐 2/6 — ဘာသာပြန်နေတယ် ({len(segs)} ပိုင်း)...")
+            result, _failed = gemini_translate(
+                api_key, segs, _mid,
+                progress_cb=lambda f: setp(0.22 + 0.20 * f,
+                                           "🌐 2/6 — ဘာသာပြန်နေတယ်..."),
+                glossary=glossary, recap=False, story_memory=mem)
+            _ckpt_save(rid, "s2_translate",
+                       {"translations": result, "src_hash": src_hash,
+                        "model": _mid, "gloss": _gloss_hash, "mem_fp": mem_fp,
+                        "drama_name": drama_name or ""})
+
+        # ---- 3/6 quality check + ပြန်ပြင် ----
+        s3 = _ckpt_load(rid, "s3_qc")
+        if _ckpt_matches(s3, {"src_hash": src_hash, "model": _mid,
+                              "gloss": _gloss_hash, "mem_fp": mem_fp}):
+            result, qc = s3["translations"], s3["report"]
+            setp(0.46, "⏭️ 3/6 — အရည်အသွေးစစ်ပြီးသား ကျော်မယ်")
+        else:
+            setp(0.44, "🔍 3/6 — အရည်အသွေးစစ်နေတယ်...")
+            result, qc = qc_retranslate(
+                api_key, _mid, result, glossary=glossary, story_memory=mem,
+                progress_cb=lambda f: setp(
+                    0.44 + 0.08 * f, "🔍 3/6 — ပျက်တဲ့လိုင်းတွေ ပြန်ပြန်နေတယ်..."))
+            if qc["bad_ratio"] > _AUTO_QC_BREAK_RATIO:
+                raise ValueError(
+                    f"စာကြောင်း {qc['bad_initial']}/{qc['checked']} ခု ပျက်နေတယ် — "
+                    "မူရင်းဘာသာစကား ရွေးတာ မှားနေနိုင်တယ်။ "
+                    "Manual mode အဆင့် ၂ မှာ စစ်ကြည့်ပါ။")
+            if drama_name:
+                setp(0.52, "🧠 3/6 — မှတ်ဉာဏ်မှာ မြန်မာနာမည်တွေ သိမ်းနေတယ်...")
+                mem = update_story_memory(
+                    api_key, _mid,
+                    mem or {"characters": [], "places": [], "terms": []},
+                    result)
+                save_story_memory(drama_name, mem)
+            _ckpt_save(rid, "s3_qc",
+                       {"translations": result, "report": _qc_report_json(qc),
+                        "src_hash": src_hash, "model": _mid,
+                        "gloss": _gloss_hash, "mem_fp": mem_fp})
         S.translations = result
         S.final_segments = [dict(x) for x in result]
         S.auto_report = qc
         _reset_review_keys(S)
 
-        # 4/6 TTS (သဘာဝအရှည် — render က video ချိန်ပေးမယ်)
-        setp(0.54, "🔊 4/6 — မြန်မာအသံထုတ်နေတယ်...")
-        work_nat = os.path.join(WORK_DIR, S.run_id, "natural")
-        natural, failed_n = tts_natural(
-            S.final_segments, voice, work_nat,
-            progress_cb=lambda f, i, t: setp(
-                0.54 + 0.20 * f, f"🔊 4/6 — အပိုင်း {i + 1}/{len(S.final_segments)}"))
-        if not natural:
-            raise ValueError("အသံထုတ်မရဘူး — network / VPN စစ်ပါ")
-        if failed_n:
-            msg.text(f"🔇 အသံထုတ်မရတဲ့အပိုင်း {len(failed_n)} ခု ကျော်သွားမယ်")
+        # ---- 4/6 TTS (သဘာဝအရှည် — render က video ချိန်ပေးမယ်) ----
+        s4 = _ckpt_load(rid, "s4_tts")
+        work_nat = os.path.join(WORK_DIR, rid, "natural")
+        natural = None
+        if _ckpt_matches(s4, {"n": len(S.final_segments), "voice": voice}):
+            cand = s4.get("natural") or []
+            if cand and all(os.path.isfile((x or {}).get("mp3", ""))
+                           for x in cand):
+                natural = cand
+                setp(0.56,
+                     f"⏭️ 4/6 — အသံထုတ်ပြီးသား ({len(natural)} ပိုင်း) ကျော်မယ်")
+        if natural is None:
+            setp(0.54, "🔊 4/6 — မြန်မာအသံထုတ်နေတယ်...")
+            natural, failed_n = tts_natural(
+                S.final_segments, voice, work_nat,
+                progress_cb=lambda f, i, t: setp(
+                    0.54 + 0.20 * f,
+                    f"🔊 4/6 — အပိုင်း {i + 1}/{len(S.final_segments)}"))
+            if not natural:
+                raise ValueError("အသံထုတ်မရဘူး — network / VPN စစ်ပါ")
+            if failed_n:
+                msg.text(f"🔇 အသံထုတ်မရတဲ့အပိုင်း {len(failed_n)} ခု ကျော်သွားမယ်")
+            _ckpt_save(rid, "s4_tts",
+                       {"natural": natural, "failed": failed_n,
+                        "n": len(S.final_segments), "voice": voice})
 
-        # 5/6 recap render (အမြဲဖွင့် — စာကြောင်းအလိုက် အတိုအရှည်ညှိ)
-        setp(0.76, "🎞️ 5/6 — video ကို narration အရှည်နဲ့ကိုက်အောင် ချိန်နေတယ်...")
-        work_rc = os.path.join(WORK_DIR, S.run_id, "recap")
-        tmp_out = os.path.join(work_rc, "recap_video.mp4")
-        _, timeline, _ = render_recap_video(
-            S.video_path, natural, S.duration, work_rc, tmp_out)
-
-        # 6/6 speedup 1.3x + finalize
-        setp(0.94, f"⚡ 6/6 — {_AUTO_SPEEDUP}x တင်ပြီး အပြီးသတ်နေတယ်...")
-        out = os.path.join(WORK_DIR, S.run_id, "dubbed_video.mp4")
-        sped = os.path.join(WORK_DIR, S.run_id, "spedup.mp4")
-        speedup_video(tmp_out, _AUTO_SPEEDUP, sped)
-        shutil.copyfile(sped, out)
-        subs = [{"start": x["start"] / _AUTO_SPEEDUP,
-                 "end": x["end"] / _AUTO_SPEEDUP,
-                 "text": x["text"]} for x in timeline]
-        amp3 = os.path.join(WORK_DIR, S.run_id, "dubbed_voiceover.mp3")
-        run(["ffmpeg", "-y", "-v", "error", "-i", out, "-vn",
-             "-c:a", "libmp3lame", "-b:a", "128k", amp3])
+        # ---- 5-6/6 recap render + speedup ----
+        s5 = _ckpt_load(rid, "s5_final")
+        if (s5 and os.path.isfile(s5.get("out_mp4", ""))
+                and os.path.isfile(s5.get("amp3", ""))):
+            out, amp3, subs = s5["out_mp4"], s5["amp3"], s5["subs"]
+            setp(0.96, "⏭️ 5-6/6 — video ပြီးသား ကျော်မယ်")
+        else:
+            setp(0.76, "🎞️ 5/6 — video ကို narration အရှည်နဲ့ကိုက်အောင် ချိန်နေတယ်...")
+            work_rc = os.path.join(WORK_DIR, rid, "recap")
+            tmp_out = os.path.join(work_rc, "recap_video.mp4")
+            _, timeline, _ = render_recap_video(
+                S.video_path, natural, S.duration, work_rc, tmp_out)
+            setp(0.94, f"⚡ 6/6 — {_AUTO_SPEEDUP}x တင်ပြီး အပြီးသတ်နေတယ်...")
+            out = os.path.join(WORK_DIR, rid, "dubbed_video.mp4")
+            sped = os.path.join(WORK_DIR, rid, "spedup.mp4")
+            speedup_video(tmp_out, _AUTO_SPEEDUP, sped)
+            shutil.copyfile(sped, out)
+            subs = [{"start": x["start"] / _AUTO_SPEEDUP,
+                     "end": x["end"] / _AUTO_SPEEDUP,
+                     "text": x["text"]} for x in timeline]
+            amp3 = os.path.join(WORK_DIR, rid, "dubbed_voiceover.mp3")
+            run(["ffmpeg", "-y", "-v", "error", "-i", out, "-vn",
+                 "-c:a", "libmp3lame", "-b:a", "128k", amp3])
+            _ckpt_save(rid, "s5_final",
+                       {"out_mp4": out, "amp3": amp3, "subs": subs})
         S.out_mp4, S.out_subs, S.auto_mp3 = out, subs, amp3
         S.auto_done = True
         setp(1.0, "✅ ပြီးပြီ!")
@@ -1690,13 +2095,14 @@ def _auto_run(S, api_key, groq_key, assembly_key, model_id, voice,
         prog.empty()
         msg.empty()
         st.error(f"⛔ Auto ရပ်သွားတယ်: {e}")
-        st.info("💡 Manual mode မှာ ဒီဗီဒီယိုနဲ့ပဲ ဆက်လုပ်လို့ရတယ် "
-                "(ရထားတဲ့အဆင့်တွေ မှတ်ထားပြီးသား)")
+        st.info("💡 ခလုတ်ပြန်နှိပ်ရင် ပြီးသားအဆင့်တွေ ကျော်ပြီး ရပ်တဲ့နေရာက "
+                "ဆက်လုပ်မယ် (ဒီဗီဒီယိုနဲ့ပဲ)")
         st.stop()
     prog.empty()
     msg.empty()
     st.toast("✅ Auto ပြီးပြီ!")
     st.rerun()
+
 
 
 def _auto_results(S):
