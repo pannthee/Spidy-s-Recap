@@ -500,13 +500,30 @@ _MYANMAR_ONLY = (
     "or any other non-Myanmar script, not even for names."
 )
 
+# လူ့လက်ရာနဲ့တူအောင်: AI ပြန်မှန်းသိသာစေတဲ့ အချက်တွေ ဖြေရှင်း
+_HUMAN_STYLE = (
+    " Write like a veteran human subtitler, NOT a translation machine. "
+    "Translate MEANING, never mirror the source sentence structure \u2014 rebuild each line "
+    "the way a Burmese person would actually say it out loud. One idea per line, short "
+    "and speakable; cut filler the viewer can already see on screen. "
+    "Match the register to each character's relationship and keep it consistent for the "
+    "whole video: close friends / lovers / family \u2192 casual (ငါ/နင်); strangers, elders, "
+    "bosses \u2192 polite (ကျွန်တော်/ခင်ဗျား). "
+    "BANNED stiff formal connectors: ထို့ကြောင့်, သို့သော်လည်း, ထို့နောက်, ထို့အပြင် \u2014 "
+    "use conversational ones instead (ဒါကြောင့်, ဒါပေမဲ့, ပြီးတော့). "
+    "Localize idioms, jokes and slang into natural Burmese equivalents \u2014 never translate "
+    "them literally. No em-dashes, no explanatory padding. "
+    "FINAL CHECK: read each line aloud in your head \u2014 if no real Burmese speaker would say "
+    "it like that, rewrite it until it sounds human."
+)
+
 _TRANSLATE_SYS = (
     "You translate video subtitle lines for Myanmar voiceover dubbing. "
     "Translate each line into natural SPOKEN Burmese (Myanmar) — the way a narrator "
     "would say it out loud, not formal written style. Keep the meaning, keep it "
     "concise (it must fit the original speaking time). Do not add explanations. "
     "Return ONLY a JSON array of objects with keys 'id' and 'text'."
-    + _MYANMAR_ONLY
+    + _MYANMAR_ONLY + _HUMAN_STYLE
 )
 
 # 🎬 Recap Studio: စာကြောင်းတိုင်းဘာသာပြန်တာအစား recap narrator ပြောသလို ပြန်ရေး
@@ -520,7 +537,7 @@ _RECAP_SYS = (
     "of each line, keep every line self-contained, and keep it concise enough to be "
     "spoken aloud. Do not add explanations. "
     "Return ONLY a JSON array of objects with keys 'id' and 'text'."
-    + _MYANMAR_ONLY
+    + _MYANMAR_ONLY + _HUMAN_STYLE
 )
 
 
@@ -659,7 +676,7 @@ _SHORTEN_SYS = (
     "words, drop repeated ideas, keep only the core meaning. Keep natural SPOKEN "
     "Burmese (Myanmar). Each item has 'max_chars' — stay under it if possible. "
     "Return ONLY a JSON array of objects with keys 'id' and 'text'."
-    + _MYANMAR_ONLY
+    + _MYANMAR_ONLY + _HUMAN_STYLE
 )
 
 
@@ -720,7 +737,7 @@ _NARRATE_SYS = (
     "Ground every line in the provided visual description and dialogue — "
     "do NOT invent events, characters, or dialogue not supported by them. "
     "Return ONLY a JSON array of objects with keys 'id' and 'text'."
-    + _MYANMAR_ONLY
+    + _MYANMAR_ONLY + _HUMAN_STYLE
 )
 
 
@@ -1455,7 +1472,7 @@ def _qc_retranslate_sys(glossary=None):
         "Devanagari/Hindi, Thai, Chinese, Korean, Japanese, Latin, or any other "
         "non-Myanmar script, not even for names. Keep the meaning, keep it concise. "
         "Return ONLY a JSON object with key 'text'."
-        + _glossary_prompt(glossary)
+        + _HUMAN_STYLE + _glossary_prompt(glossary)
     )
 
 
