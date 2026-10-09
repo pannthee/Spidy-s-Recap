@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Spidy Dub Studio — All-in-One Video Dubbing & Creator Studio
-(Dubbing + Title/Tags + Caption + Pronunciation Dict + Subtitle Burn-in + Speed 2.0x + Thumbnail Maker)
+"""Spidy Dub Studio — All-in-One AI Studio
+(Auto Transcript + Text-to-Speech Generator + Video Dubbing + Thumbnail Maker)
 """
 import asyncio
 import hashlib
@@ -22,7 +22,7 @@ WORK_DIR = os.path.join(APP_DIR, "work")
 os.makedirs(CACHE_TTS, exist_ok=True)
 os.makedirs(WORK_DIR, exist_ok=True)
 
-# ---------------------------------------------------------- 🕷️ UI CSS
+# ---------------------------------------------------------- 🕷️ UI Styling
 _SPIDEY_CSS = """<style>
 @import url('https://fonts.googleapis.com/css2?family=Bangers&display=swap');
 .stApp {
@@ -97,28 +97,36 @@ def fmt_ts(sec):
     s, ms = divmod(rem, 1000)
     return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
 
-def parse_ts(s):
-    s = s.strip().replace(",", ".")
-    parts = s.split(":")
-    if len(parts) == 3:
-        h, m, sec = parts
-        return int(h) * 3600 + int(m) * 60 + float(sec)
-    m, sec = parts
-    return int(m) * 60 + float(sec)
-
 def silence(path, seconds, sr=24000):
     run(["ffmpeg", "-y", "-v", "error", "-f", "lavfi",
          "-i", "anullsrc=r=24000:cl=mono", "-t", f"{seconds:.3f}",
          "-ar", str(sr), path])
 
 def apply_pronunciation(text, dict_list):
-    """Pronunciation Dictionary အတိုင်း အင်္ဂလိပ်စာလုံးများကို မြန်မာအသံထွက်ပြောင်းခြင်း"""
     res = text
     for item in dict_list:
         w, r = item.get("word", "").strip(), item.get("replace", "").strip()
         if w and r:
             res = re.sub(re.escape(w), r, res, flags=re.IGNORECASE)
     return res
+
+def segments_to_srt(segments):
+    return "\n".join([f"{i}\n{fmt_ts(s['start'])} --> {fmt_ts(s['end'])}\n{s['text']}\n" for i, s in enumerate(segments, 1)])
+
+def generate_proportional_srt(text, total_duration):
+    """စာသားကို အပိုင်းပိုင်းခွဲပြီး စုစုပေါင်းကြာချိန်အလိုက် အချိုးကျ SRT ထုတ်ပေးခြင်း"""
+    clean_text = re.sub(r'\s+', ' ', text).strip()
+    segments = [s.strip() for s in re.split(r'(?<=[။!?\n])', clean_text) if s.strip()]
+    if not segments:
+        segments = [text]
+    total_chars = sum(len(s) for s in segments) or 1
+    srt_list, current_time = [], 0.0
+    for s in segments:
+        seg_dur = (len(s) / total_chars) * total_duration
+        end_time = current_time + seg_dur
+        srt_list.append({"start": current_time, "end": end_time, "text": s})
+        current_time = end_time
+    return segments_to_srt(srt_list)
 
 # ------------------------------------------------------- Gemini APIs
 def _gemini_call(api_key, model_id, system_text, payload_text, json_mode=True):
@@ -141,42 +149,24 @@ def _gemini_call(api_key, model_id, system_text, payload_text, json_mode=True):
         return json.loads(txt.strip())
     return txt
 
-def gemini_translate(api_key, segments, model_id):
+def gemini_generate_transcript(api_key, model_id, raw_transcript, duration_pref="1"):
+    """Auto Transcript: မူရင်းစာသားမှ ဇာတ်လမ်းနှင့် ခေါင်းစဉ်များ ဖန်တီးပေးခြင်း"""
+    dur_map = {
+        "1": "~250 words suitable for 1 minute reading",
+        "2": "~400 words suitable for 2 minutes reading",
+        "3": "~600 words suitable for 3 minutes reading",
+        "5": "~900 words suitable for 5 minutes reading"
+    }
+    req_dur = dur_map.get(duration_pref, "~300 words")
     sys_prompt = (
-        "You translate video subtitle lines for Myanmar voiceover dubbing. "
-        "Translate each line into natural SPOKEN Burmese (Myanmar). "
-        "Write ONLY in Myanmar Unicode script. "
-        "Return ONLY a JSON array of objects with keys 'id' and 'text'."
+        f"You are a professional movie recap & viral scriptwriter. Read the raw transcription and create an engaging storytelling script in SPOKEN BURMESE (MYANMAR). "
+        f"The script must be {req_dur}. "
+        f"Also generate 5 clickbaity Burmese titles (each title MUST end with exactly 4 relevant hashtags).\n"
+        f"Return ONLY valid JSON with keys 'titles' (list of strings) and 'script' (string)."
     )
-    items = [{"id": i, "text": s["text"]} for i, s in enumerate(segments)]
-    out = {}
-    BATCH = 25
-    for i in range(0, len(items), BATCH):
-        batch = items[i:i+BATCH]
-        try:
-            res = _gemini_call(api_key, model_id, sys_prompt, json.dumps(batch, ensure_ascii=False))
-            for row in res:
-                if isinstance(row, dict) and "id" in row and "text" in row:
-                    out[int(row["id"])] = str(row["text"]).strip()
-        except Exception:
-            pass
-    return [{"start": s["start"], "end": s["end"], "src": s["text"], "text": out.get(i, s["text"])} for i, s in enumerate(segments)]
+    return _gemini_call(api_key, model_id, sys_prompt, raw_transcript[:12000], json_mode=True)
 
-def generate_social_assets(api_key, model_id, script_text):
-    """ခေါင်းစဉ် ၅ ခု၊ Tags နှင့် Social Media Description ရေးပေးခြင်း"""
-    sys_prompt = (
-        "You are an expert viral content creator. Based on the provided Burmese video script, "
-        "generate:\n"
-        "1. Exactly 5 highly engaging, clickbaity YouTube/Facebook titles in Burmese (each title MUST end with 4 relevant hashtags).\n"
-        "2. A compelling, engaging social media description (caption) with emojis in Burmese.\n"
-        "Return ONLY a JSON object with keys 'titles' (list of strings) and 'description' (string)."
-    )
-    try:
-        return _gemini_call(api_key, model_id, sys_prompt, script_text[:8000], json_mode=True)
-    except Exception:
-        return {"titles": [], "description": ""}
-
-# ------------------------------------------------------- STT (Groq)
+# ------------------------------------------------------- Groq STT
 def transcribe_audio_groq(audio_path, api_key, language=None):
     with open(audio_path, "rb") as f:
         data = f.read()
@@ -194,124 +184,16 @@ def transcribe_audio_groq(audio_path, api_key, language=None):
             segs.append({"start": float(s.get("start") or 0), "end": float(s.get("end") or 0), "text": t})
     return segs
 
-# ------------------------------------------------------- TTS & FFmpeg
+# ------------------------------------------------------- Edge-TTS
 async def _edge_save(text, voice, path):
     import edge_tts
     await edge_tts.Communicate(text, voice).save(path)
 
-def tts_segment(text, voice):
-    key = hashlib.sha1(f"edge:{voice}:{text}".encode("utf-8")).hexdigest()[:16]
-    out = os.path.join(CACHE_TTS, f"{key}.mp3")
-    if os.path.isfile(out) and os.path.getsize(out) > 1000:
-        return out
-    try:
-        asyncio.run(_edge_save(text, voice, out))
-        return out
-    except Exception:
-        return None
+def tts_generate_file(text, voice, out_path):
+    asyncio.run(_edge_save(text, voice, out_path))
+    return out_path
 
-def tts_natural(segments, voice, pron_dict):
-    out = []
-    for s in segments:
-        text = apply_pronunciation(s["text"].strip(), pron_dict)
-        mp3 = tts_segment(text, voice)
-        if mp3:
-            out.append({"start": float(s["start"]), "end": float(s["end"]), "text": text, "mp3": mp3, "dur": dur(mp3)})
-    return out
-
-def render_recap_video(video_path, natural, total_duration, work_dir, out_mp4):
-    n = len(natural)
-    pieces = []
-    if natural[0]["start"] > 0.05:
-        pieces.append((0.0, natural[0]["start"], natural[0]["start"]))
-    for i, sg in enumerate(natural):
-        b = natural[i + 1]["start"] if i + 1 < n else total_duration
-        b = max(b, sg["end"])
-        gap = max(0.0, b - sg["end"])
-        pieces.append((sg["start"], b, sg["dur"] + gap))
-
-    fparts, vlabels = [], []
-    for j, (a, b, target) in enumerate(pieces):
-        p_dur = b - a
-        factor = min(max(target / p_dur if p_dur > 0.05 else 1.0, 0.05), 20.0)
-        fparts.append(f"[0:v]trim=start={a:.3f}:end={b:.3f},settb=AVTB,setpts=(PTS-STARTPTS)*{factor:.4f}[v{j}]")
-        vlabels.append(f"[v{j}]")
-    fcomplex = ";".join(fparts) + ";" + "".join(vlabels) + f"concat=n={len(pieces)}:v=1:a=0,fps=30[vout]"
-
-    lst = os.path.join(work_dir, "recap_audio.txt")
-    with open(lst, "w") as fh:
-        if natural[0]["start"] > 0.05:
-            gf = os.path.join(work_dir, f"_lead_gap.mp3")
-            silence(gf, natural[0]["start"])
-            fh.write(f"file '{os.path.abspath(gf)}'\n")
-        for i, sg in enumerate(natural):
-            fh.write(f"file '{os.path.abspath(sg['mp3'])}'\n")
-            b = natural[i + 1]["start"] if i + 1 < n else total_duration
-            gap = max(0.0, b - sg["end"])
-            if gap > 0.02:
-                gf = os.path.join(work_dir, f"_rgap{round(gap, 2)}.mp3")
-                if not os.path.exists(gf):
-                    silence(gf, gap)
-                fh.write(f"file '{os.path.abspath(gf)}'\n")
-
-    run(["ffmpeg", "-y", "-v", "error", "-i", video_path, "-f", "concat", "-safe", "0", "-i", lst,
-         "-filter_complex", fcomplex, "-map", "[vout]", "-map", "1:a:0",
-         "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-c:a", "aac", "-b:a", "128k",
-         "-movflags", "+faststart", "-shortest", out_mp4])
-
-    timeline, cum = [], natural[0]["start"] if natural[0]["start"] > 0.05 else 0.0
-    for i, sg in enumerate(natural):
-        b = natural[i + 1]["start"] if i + 1 < n else total_duration
-        target = sg["dur"] + max(0.0, b - sg["end"])
-        timeline.append({"start": cum, "end": cum + sg["dur"], "text": sg["text"]})
-        cum += target
-    return out_mp4, timeline
-
-def speedup_video(video_in, factor, out_mp4):
-    if abs(factor - 1.0) < 1e-6:
-        shutil.copyfile(video_in, out_mp4)
-        return out_mp4
-    run(["ffmpeg", "-y", "-v", "error", "-i", video_in,
-         "-vf", f"setpts=PTS/{factor:.4f}", "-af", f"atempo={factor:.4f}",
-         "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-c:a", "aac", "-b:a", "128k",
-         "-movflags", "+faststart", out_mp4])
-    return out_mp4
-
-def burn_subtitles_to_video(video_in, srt_path, out_mp4):
-    escaped_srt = os.path.abspath(srt_path).replace("\\", "/").replace(":", "\\:")
-    sub_filter = (
-        f"subtitles='{escaped_srt}':force_style='FontName=Noto Sans Myanmar,FontSize=16,"
-        f"PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BorderStyle=1,Outline=2,Shadow=1,MarginV=25'"
-    )
-    run(["ffmpeg", "-y", "-v", "error", "-i", video_in, "-vf", sub_filter,
-         "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-c:a", "copy",
-         "-movflags", "+faststart", out_mp4])
-    return out_mp4
-
-def segments_to_srt(segments):
-    return "\n".join([f"{i}\n{fmt_ts(s['start'])} --> {fmt_ts(s['end'])}\n{s['text']}\n" for i, s in enumerate(segments, 1)])
-
-# ------------------------------------------------------- AI Thumbnail Generator
-def generate_thumbnail_image(api_key, context, title_text, ratio, text_color, style, ref_image_bytes=None):
-    aspect_map = {"16:9": "16:9 landscape format for YouTube", "9:16": "9:16 vertical layout for TikTok/Reels", "4:5": "4:5 portrait format for Facebook/Instagram"}
-    prompt = f"Create an epic, high-impact YouTube clickbait thumbnail in {aspect_map.get(ratio, '16:9')}. Subject theme: {context}. "
-    if title_text.strip():
-        prompt += f"Boldly feature typography text: '{title_text}' using vibrant {text_color} colors. "
-    prompt += f"Overall style: {style}. Highly detailed, ultra sharp, cinematic lighting."
-    
-    parts = [{"text": prompt}]
-    if ref_image_bytes:
-        parts.append({"inlineData": {"mimeType": "image/jpeg", "data": base64.b64encode(ref_image_bytes).decode("utf-8")}})
-    
-    url = f"{GEMINI_BASE}gemini-2.5-flash-image-preview:generateContent?key={api_key}"
-    body = {"contents": [{"parts": parts}], "generationConfig": {"responseModalities": ["IMAGE"]}}
-    r = requests.post(url, headers={"Content-Type": "application/json"}, json=body, timeout=120)
-    if r.status_code != 200:
-        raise RuntimeError(f"Thumbnail API Error: {r.text[:200]}")
-    b64_data = r.json()["candidates"][0]["content"]["parts"][0]["inlineData"]["data"]
-    return base64.b64decode(b64_data)
-
-# ------------------------------------------------------------------ Streamlit Main App
+# ------------------------------------------------------- Main Application
 def main():
     st.set_page_config(page_title="Spidy Dub Studio", page_icon="🕷️", layout="wide")
     st.markdown(_SPIDEY_CSS, unsafe_allow_html=True)
@@ -327,17 +209,16 @@ def main():
         groq_key = st.text_input("Groq API Key", value=os.environ.get("GROQ_API_KEY", ""), type="password")
 
         st.divider()
-        st.markdown("#### 🎚️ Render & Audio ဆက်တင်")
-        voice = st.selectbox("အသံရွေးချယ်ပါ", [VOICE_MALE, VOICE_FEMALE], format_func=lambda v: "🗣️ ကျား (Thiha)" if v == VOICE_MALE else "🗣️ မ (Nilar)")
-        speedup = st.slider("⚡ Render ပြီးရင် Speed တင် (1.0x - 2.0x)", 1.0, 2.0, 1.0, 0.05, help="ဗီဒီယိုနှင့် မြန်မာအသံကို တစ်ပြိုင်နက် 2.0x အထိ အမြန်နှုန်း တင်ပေးပါမည်")
-        burn_subs = st.checkbox("📝 Video Final တွင် Subtitle တခါတည်းထိုးမည်", value=True, help="အမှန်ခြစ်ထားပါက Final Video ထဲတွင် မြန်မာစာတန်းထိုး အလိုအလျောက် ပါသွားပါမည်")
+        st.markdown("#### 🗣️ အသံ ဆက်တင်")
+        voice = st.selectbox("အသံရွေးချယ်ပါ", [VOICE_MALE, VOICE_FEMALE],
+                             format_func=lambda v: "🗣️ ကျား (Thiha)" if v == VOICE_MALE else "🗣️ မ (Nilar)")
 
         st.divider()
         with st.expander("📖 အသံထွက် အဘိဓာန် (Pronunciation)", expanded=False):
-            st.caption("အသံထွက်မှားတတ်သော စာလုံးများကို အစားထိုးသတ်မှတ်ပါ:")
+            st.caption("AI အသံထွက်မှားတတ်သော စာလုံးများကို အစားထိုးသတ်မှတ်ပါ:")
             new_w = st.text_input("မူရင်းစာလုံး (Word)", key="pw_w")
             new_r = st.text_input("အသံထွက်စာ (Replace)", key="pw_r")
-            if st.button("➕ စာလုံးပေါင်းထည့်ရန်"):
+            if st.button("➕ ထည့်ရန်"):
                 if new_w and new_r:
                     st.session_state.pron_dict.append({"word": new_w, "replace": new_r})
                     st.success("ထည့်သွင်းပြီးပါပြီ!")
@@ -348,138 +229,133 @@ def main():
         '<div class="spidey-hero">'
         '<div class="spidey-kicker">🕸️ ALL-IN-ONE VIDEO CREATOR STUDIO 🕸️</div>'
         '<div class="spidey-title">Spidy Dub Studio</div>'
-        '<div class="spidey-sub">Audio Dubbing • Titles & Captions • Subtitles • Thumbnail Maker 🕷️</div>'
+        '<div class="spidey-sub">Auto Transcript • အသံဖန်တီးမည် • Video Dubbing 🕷️</div>'
         '</div>', unsafe_allow_html=True
     )
 
-    tab_dub, tab_thumb = st.tabs(["🎙️ Audio Dub & Social Creator", "🖼️ AI Thumbnail Maker"])
+    # TABS Definition
+    tab_gen, tab_transcript = st.tabs([
+        "🔊 အသံဖန်တီးမည် (Generator)",
+        "✨ Auto Transcript Studio"
+    ])
 
-    # ---------------- TAB 1: Dubbing & Assets ----------------
-    with tab_dub:
-        c1, c2 = st.columns([1, 1])
-        with c1:
-            st.markdown('<div class="spidey-stephead"><span class="spidey-num">1</span><span>Video တင်သွင်းပါ</span></div>', unsafe_allow_html=True)
-            video_file = st.file_uploader("MP4 / MOV ဗီဒီယိုဖိုင် တင်ပါ", type=["mp4", "mov", "webm"])
-        with c2:
-            st.markdown('<div class="spidey-stephead"><span class="spidey-num">2</span><span>စနစ်ပြင်ဆင်မှု</span></div>', unsafe_allow_html=True)
-            src_lang = st.selectbox("မူရင်းဘာသာစကား", ["Auto", "English", "Korean", "Japanese", "Chinese", "Thai"])
-            lang_code = None if src_lang == "Auto" else {"English": "en", "Korean": "ko", "Japanese": "ja", "Chinese": "zh", "Thai": "th"}[src_lang]
+    # =========================================================================
+    # TAB 1: အသံဖန်တီးမည် (TTS Generator)
+    # =========================================================================
+    with tab_gen:
+        st.markdown('<div class="spidey-stephead"><span class="spidey-num">1</span><span>စာသားမှ မြန်မာအသံဖိုင် ဖန်တီးမည်</span></div>', unsafe_allow_html=True)
+        gen_text = st.text_area("အသံဖန်တီးလိုသော စာသားကို ရိုက်ထည့်ပါ:", height=250, placeholder="မင်္ဂလာပါ... ဒီနေရာတွင် အသံသွင်းလိုသော မြန်မာစာသားများကို ရိုက်ထည့်ပါ...")
 
-        if video_file and st.button("🚀 ဗီဒီယို စတင်ဆန်းစစ်ပြီး Dubbing ပြုလုပ်မည်", type="primary", use_container_width=True):
+        col_g1, col_g2 = st.columns([1, 1])
+        with col_g1:
+            if st.button("🔍 အစမ်းနားထောင်မည် (Preview)", use_container_width=True):
+                if not gen_text.strip():
+                    st.warning("စာသားအရင် ရိုက်ထည့်ပေးပါ")
+                else:
+                    preview_text = apply_pronunciation(gen_text[:120], st.session_state.pron_dict)
+                    p_path = os.path.join(WORK_DIR, "preview.mp3")
+                    with st.spinner("နမူနာ အသံထုတ်နေသည်..."):
+                        tts_generate_file(preview_text, voice, p_path)
+                        st.audio(p_path)
+
+        with col_g2:
+            if st.button("🚀 အသံဖိုင် အပြည့်အစုံ ဖန်တီးမည်", type="primary", use_container_width=True):
+                if not gen_text.strip():
+                    st.error("စာသားအရင် ရိုက်ထည့်ပေးပါ")
+                else:
+                    final_text = apply_pronunciation(gen_text, st.session_state.pron_dict)
+                    out_gen_audio = os.path.join(WORK_DIR, f"tts_{uuid.uuid4().hex[:6]}.mp3")
+                    with st.spinner("အသံဖိုင် ဖန်တီးနေပါသည်..."):
+                        tts_generate_file(final_text, voice, out_gen_audio)
+                        st.success("အသံဖိုင် ဖန်တီးပြီးပါပြီ!")
+                        st.audio(out_gen_audio)
+                        
+                        audio_len = dur(out_gen_audio)
+                        gen_srt = generate_proportional_srt(final_text, audio_len)
+
+                        d_c1, d_c2 = st.columns(2)
+                        with d_c1:
+                            with open(out_gen_audio, "rb") as f:
+                                st.download_button("⬇️ Download Audio (MP3)", f, file_name="Voiceover.mp3", mime="audio/mpeg", use_container_width=True)
+                        with d_c2:
+                            st.download_button("⬇️ Download Subtitle (SRT)", gen_srt, file_name="Voiceover.srt", mime="text/plain", use_container_width=True)
+
+    # =========================================================================
+    # TAB 2: Auto Transcript Studio
+    # =========================================================================
+    with tab_transcript:
+        st.markdown('<div class="spidey-stephead"><span class="spidey-num">2</span><span>Video မှ Script နှင့် Voiceover အလိုအလျောက် ထုတ်ယူမည်</span></div>', unsafe_allow_html=True)
+        st.caption("Video ဖိုင်ကို တင်လိုက်ရုံဖြင့် အသံကို နားထောင်ပြီး YouTube/Facebook အတွက် ခေါင်းစဉ် ၅ ခု၊ ဇာတ်လမ်း Script နှင့် မြန်မာ Voiceover အသစ် ထုတ်ပေးပါမည်။")
+
+        trans_file = st.file_uploader("MP4 / WebM / MKV Video ဖိုင် တင်ပါ", type=["mp4", "webm", "mkv"], key="trans_uploader")
+        
+        c_t1, c_t2 = st.columns(2)
+        with c_t1:
+            trans_dur = st.selectbox("ဇာတ်လမ်း အရှည် (Duration)", ["1", "2", "3", "5"],
+                                     format_func=lambda d: f"{d} မိနစ်စာ Script")
+        with c_t2:
+            trans_lang = st.selectbox("ဗီဒီယို မူရင်းဘာသာစကား", ["Auto", "English", "Korean", "Japanese", "Chinese", "Thai"])
+            t_lang_code = None if trans_lang == "Auto" else {"English": "en", "Korean": "ko", "Japanese": "ja", "Chinese": "zh", "Thai": "th"}[trans_lang]
+
+        if trans_file and st.button("✨ Auto Transcript & Voiceover စတင်ထုတ်မည်", type="primary", use_container_width=True):
             if not gemini_key or not groq_key:
-                st.error("ကျေးဇူးပြု၍ Sidebar တွင် Gemini Key နှင့် Groq Key ထည့်သွင်းပါ")
+                st.error("Sidebar တွင် Gemini API Key နှင့် Groq API Key ထည့်သွင်းပေးပါ")
                 st.stop()
 
             run_id = uuid.uuid4().hex[:8]
             rd = os.path.join(WORK_DIR, run_id)
             os.makedirs(rd, exist_ok=True)
-            vpath = os.path.join(rd, video_file.name)
+            vpath = os.path.join(rd, trans_file.name)
             with open(vpath, "wb") as f:
-                f.write(video_file.getbuffer())
+                f.write(trans_file.getbuffer())
 
-            with st.status("လုပ်ငန်းစဉ် စတင်နေပါသည်...", expanded=True) as status_box:
-                # 1. Audio extract
-                status_box.update(label="Audio ခွဲထုတ်နေပါသည်...")
-                wpath = os.path.join(rd, "audio.mp3")
+            with st.status("Auto Transcript စနစ် လည်ပတ်နေပါသည်...", expanded=True) as status_box:
+                # 1. Audio Extraction
+                status_box.update(label="ဗီဒီယိုမှ အသံဖိုင် ခွဲထုတ်နေပါသည်...")
+                wpath = os.path.join(rd, "extracted_audio.mp3")
                 run(["ffmpeg", "-y", "-v", "error", "-i", vpath, "-ar", "16000", "-ac", "1", "-b:a", "32k", wpath])
-                total_duration = dur(vpath)
 
-                # 2. STT
-                status_box.update(label="Groq Whisper ဖြင့် အသံမှ စာသားထုတ်နေပါသည်...")
-                segs = transcribe_audio_groq(wpath, groq_key, lang_code)
+                # 2. Groq Whisper Transcription
+                status_box.update(label="Groq Whisper ဖြင့် အသံကို နားထောင်နေပါသည်...")
+                segs = transcribe_audio_groq(wpath, groq_key, t_lang_code)
+                raw_text = " ".join([s["text"] for s in segs])
 
-                # 3. Translate
-                status_box.update(label="Gemini ဖြင့် မြန်မာဘာသာသို့ ပြန်ဆိုနေပါသည်...")
-                translations = gemini_translate(gemini_key, segs, GEMINI_MODEL_DEFAULT)
-                full_script = " ".join([t["text"] for t in translations])
+                # 3. Gemini Script & Titles Generation
+                status_box.update(label="Gemini မှ ဇာတ်လမ်းနှင့် ခေါင်းစဉ်များ ရေးသားနေပါသည်...")
+                res_meta = gemini_generate_transcript(gemini_key, GEMINI_MODEL_DEFAULT, raw_text, trans_dur)
+                script_body = res_meta.get("script", "")
+                script_body_pron = apply_pronunciation(script_body, st.session_state.pron_dict)
 
-                # 4. Social Assets
-                status_box.update(label="Titles & Description ရေးသားနေပါသည်...")
-                social_meta = generate_social_assets(gemini_key, GEMINI_MODEL_DEFAULT, full_script)
+                # 4. Generate Myanmar Voiceover
+                status_box.update(label="မြန်မာအသံဖိုင် အသစ် ဖန်တီးနေပါသည်...")
+                out_trans_audio = os.path.join(rd, "dubbed_voiceover.mp3")
+                tts_generate_file(script_body_pron, voice, out_trans_audio)
+                
+                audio_dur = dur(out_trans_audio)
+                srt_content = generate_proportional_srt(script_body, audio_dur)
+                status_box.update(label="ပြီးမြောက်ပါပြီ!", state="complete")
 
-                # 5. TTS & Recap Render
-                status_box.update(label="မြန်မာအသံဖိုင် ဖန်တီးပြီး ဗီဒီယိုနှင့် ပေါင်းစပ်နေပါသည်...")
-                natural = tts_natural(translations, voice, st.session_state.pron_dict)
-                work_rc = os.path.join(rd, "recap")
-                raw_mp4 = os.path.join(work_rc, "recap.mp4")
-                _, timeline = render_recap_video(vpath, natural, total_duration, work_rc, raw_mp4)
+            st.success("🎉 Auto Transcript နှင့် Voiceover အောင်မြင်စွာ ထုတ်ယူပြီးပါပြီ!")
 
-                # 6. Speedup
-                _stage = raw_mp4
-                _subs = timeline
-                if speedup > 1.0:
-                    status_box.update(label=f"အမြန်နှုန်းကို {speedup}x သို့ မြှင့်တင်နေပါသည်...")
-                    sped_mp4 = os.path.join(rd, "spedup.mp4")
-                    speedup_video(_stage, speedup, sped_mp4)
-                    _stage = sped_mp4
-                    _subs = [{"start": s["start"] / speedup, "end": s["end"] / speedup, "text": s["text"]} for s in _subs]
+            # Generated Titles Box
+            st.subheader("📌 အကြံပြု ခေါင်းစဉ်များ (Viral Titles with Tags):")
+            for t_title in res_meta.get("titles", []):
+                st.code(t_title, language="text")
 
-                # 7. Subtitle Burn-in
-                if burn_subs and _subs:
-                    status_box.update(label="ဗီဒီယိုပေါ်တွင် မြန်မာ Subtitle စာတန်း တိုက်ရိုက်ထိုးနေပါသည်...")
-                    srt_path = os.path.join(rd, "sub.srt")
-                    with open(srt_path, "w", encoding="utf-8") as f:
-                        f.write(segments_to_srt(_subs))
-                    burned_mp4 = os.path.join(rd, "final_burned.mp4")
-                    try:
-                        burn_subtitles_to_video(_stage, srt_path, burned_mp4)
-                        _stage = burned_mp4
-                    except Exception as e:
-                        st.warning(f"Subtitle burn error: {e}")
+            # Script Area
+            st.subheader("📝 ထွက်ရှိလာသော Script:")
+            st.text_area("Script စာသား:", value=script_body, height=200)
 
-                final_out = os.path.join(rd, "final_video.mp4")
-                shutil.copyfile(_stage, final_out)
-                status_box.update(label="အားလုံးပြီးမြောက်ပါပြီ!", state="complete")
+            # Audio Player & Downloads
+            st.subheader("🔊 ထွက်ရှိလာသော Voiceover အသံဖိုင်:")
+            st.audio(out_trans_audio)
 
-            st.success("🎉 အောင်မြင်စွာ ဖန်တီးပြီးပါပြီ!")
-            st.video(final_out)
-
-            # Titles & Description Display
-            with st.expander("🔥 Social Media အတွက် ခေါင်းစဉ် ၅ ခု နှင့် Caption (နှိပ်ကြည့်ရန်)", expanded=True):
-                st.subheader("📌 အကြံပြု ခေါင်းစဉ်များ (Titles with Tags):")
-                for t in social_meta.get("titles", []):
-                    st.code(t, language="text")
-                st.subheader("📝 Caption / Description:")
-                st.code(social_meta.get("description", ""), language="text")
-
-            # Downloads
-            d1, d2 = st.columns(2)
-            with d1:
-                with open(final_out, "rb") as f:
-                    st.download_button("⬇️ Download Dubbed Video (MP4)", f, file_name="Spidy_Dubbed.mp4", mime="video/mp4", use_container_width=True)
-            with d2:
-                st.download_button("⬇️ Download SRT Subtitle", segments_to_srt(_subs), file_name="Spidy_Sub.srt", mime="text/plain", use_container_width=True)
-
-    # ---------------- TAB 2: AI Thumbnail Maker ----------------
-    with tab_thumb:
-        st.markdown('<div class="spidey-stephead"><span class="spidey-num">🎨</span><span>AI Thumbnail ဖန်တီးရန်</span></div>', unsafe_allow_html=True)
-        th_context = st.text_area("Thumbnail အကြောင်းအရာ (Topic / Concept)", placeholder="ဥပမာ - ရန်သူမသိအောင် တိုက်ခိုက်နိုင်တဲ့ B-2 Spirit ကိုယ်ပျောက်ဗုံးကြဲလေယာဉ်...")
-        th_text = st.text_input("ပုံပေါ်တွင် ရေးမည့်စာသား (Title Typography - Optional)", placeholder="ဥပမာ - လျှို့ဝှက်တိုက်ခိုက်မှု...")
-
-        c_t1, c_t2, c_t3 = st.columns(3)
-        with c_t1:
-            th_ratio = st.selectbox("ပုံအရွယ်အစား (Ratio)", ["16:9", "9:16", "4:5"])
-        with c_t2:
-            th_color = st.selectbox("စာသားအရောင် (Text Color)", ["Neon Cyan and Bright Yellow", "Pure White with Heavy Shadow", "Blood Red and Pure White", "Luxury Gold and Deep Black"])
-        with c_t3:
-            th_style = st.selectbox("အနုပညာစတိုင် (Art Style)", ["Epic, dramatic, and cinematic with high contrast", "Cyberpunk, neon lights, highly futuristic", "Anime style, dynamic action", "Dark, mysterious, horror style"])
-
-        th_ref = st.file_uploader("Thumbnail ထဲ ထည့်သွင်းလိုသော ပုံ (Optional)", type=["jpg", "png", "jpeg"], key="th_uploader")
-
-        if st.button("✨ Thumbnail ဖန်တီးမည် (Generate Thumbnail)", type="primary"):
-            if not gemini_key:
-                st.error("Sidebar တွင် Gemini API Key ထည့်ပါ")
-            elif not th_context.strip():
-                st.warning("အကြောင်းအရာ အနည်းငယ် ရိုက်ထည့်ပေးပါ")
-            else:
-                with st.spinner("AI မှ Thumbnail ဖန်တီးနေပါသည်..."):
-                    try:
-                        ref_bytes = th_ref.getbuffer().tobytes() if th_ref else None
-                        img_bytes = generate_thumbnail_image(gemini_key, th_context, th_text, th_ratio, th_color, th_style, ref_bytes)
-                        st.image(img_bytes, caption="Generated Thumbnail", use_container_width=True)
-                        st.download_button("⬇️ Download Thumbnail (JPG)", img_bytes, file_name="Thumbnail.jpg", mime="image/jpeg")
-                    except Exception as e:
-                        st.error(f"Thumbnail error: {e}")
+            d_tc1, d_tc2 = st.columns(2)
+            with d_tc1:
+                with open(out_trans_audio, "rb") as f:
+                    st.download_button("⬇️ Download Voiceover (MP3)", f, file_name="Auto_Voiceover.mp3", mime="audio/mpeg", use_container_width=True)
+            with d_tc2:
+                st.download_button("⬇️ Download Subtitle (SRT)", srt_content, file_name="Auto_Subtitle.srt", mime="text/plain", use_container_width=True)
 
 if __name__ == "__main__":
     main()
