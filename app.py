@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Audio Dub Studio — ဗီဒီယိုထဲက စာသားပြောအပိုင်းတွေကို မြန်မာအသံနဲ့ အစားထိုးပေးတဲ့ tool.
+"""Spidy Dub Studio — ဗီဒီယိုထဲက စာသားပြောအပိုင်းတွေကို မြန်မာအသံနဲ့ အစားထိုးပေးတဲ့ tool.
 
 RecapKit ရဲ့ Audio Dub feature ကို တစ်ယောက်စာသုံးဖို့ ပြန်ဆောက်ထားတာ။
 Login မလို၊ ငွေမလို — ကိုယ့် Streamlit Cloud မှာ run တယ်။
@@ -9,11 +9,31 @@ hard refresh ဆွဲလည်း မပျောက်ဘူး (server Secret
 Pipeline:
   1. MP4 တင် → ffmpeg နဲ့ audio ထုတ် (mp3 16k mono, 32k — Groq 25MB ကန့်သတ်ချက်နဲ့ကိုက်အောင်)
   2. Groq Whisper API (whisper-large-v3) နဲ့ စာသားထုတ် (timestamp ပါ)
+     ※ အရင်က local faster-whisper သုံးတာ — Streamlit Cloud ရဲ့ RAM (~1GB)
+       ကန့်သတ်ချက်နဲ့ မကိုက်လို့ Groq API နဲ့ လဲထားတာ
+     ※ Groq က 403 IP-block ထိရင် AssemblyAI နဲ့ အလိုအလျောက် fallback
+       (sidebar toggle + ကိုယ့် AssemblyAI key)
+  2b. (optional) အပိုင်းသေးလေးတွေ အလိုအလျောက်ပေါင်း — Whisper ရဲ့ 0.2s လို
+      အကွက်သေးတွေကြောင့် အသံအရမ်းမြန်ရတာကို ကာကွယ်ဖို့
   3. Gemini နဲ့ သဘာဝကျတဲ့ ပြောစကားမြန်မာလို ဘာသာပြန်
   4. ပြန်စစ်ပြီး ပြင်လို့ရ (တစ်ကြောင်းချင်း)
-  5. edge-tts (my-MM-ThihaNeural) နဲ့ အသံထုတ်
-  6. ဗီဒီယိုအသစ်နဲ့ ပေါင်း → MP4 download + Speed 2x ထိ တင်လို့ရ
-  7. Social Media အတွက် Viral Caption (3Sec Hook) + English Hashtags ၅ ခုထုတ်ပေးခြင်း
+  5. edge-tts (my-MM-ThihaNeural) နဲ့ အသံထုတ် → အချိန်ကွက်အတိုင်း ချုံ့/ဖြန့်
+  5b. (optional) အချိန်ကွက်ထဲ မဝင်တဲ့လိုင်း → Gemini နဲ့ အလိုအလျောက်တိုအောင်ပြင်
+      → အသံပြန်ထုတ် (တစ်ကြိမ်သာ)
+  6. ဗီဒီယိုအသစ်နဲ့ ပေါင်း → MP4 download + SRT download
+
+🎬 Recap Studio (sidebar toggle):
+  3b. Recap စတိုင်ဘာသာပြန် — စာကြောင်းတိုင်းဘာသာပြန်တာအစား movie recap
+      narrator ပြောသလို သဘာဝကျတဲ့ ပြောစကားမြန်မာလို ပြန်ရေး
+  6b. Recap render — အသံကို slot ထဲ အတင်းမထည့်ဘဲ သဘာဝအတိုင်းထား,
+      video အပိုင်းတစ်ခုချင်းစီကို narration အရှည်နဲ့ကိုက်အောင် setpts နဲ့
+      အမြန်/အနှေးချိန် (slow-mo/fast-mo) → dub audio နဲ့ mux
+
+🎙️ Narrator mode (ဗီဒီယိုမုဒ်သာ):
+  3'. ffmpeg scene detection → scene တစ်ခုချင်း frame ထုတ် →
+     Gemini vision က scene ဖော်ပြချက် → Gemini က third-person မြန်မာ
+     narrator script ရေး (scene အလိုက်, အချိန်နဲ့ကိုက်အောင်) →
+     S.translations ထဲ ထည့် → အဆင့် ၄/၅/၆ အဟောင်းအတိုင်း ဆက်
 
 Run:  streamlit run app.py
 """
@@ -27,13 +47,6 @@ import shutil
 import subprocess
 import sys
 import uuid
-import tempfile
-import streamlit as st
-import google.generativeai as genai
-from groq import Groq
-import edge_tts
-
-st.set_page_config(page_title="Audio Dub Studio", page_icon="🕷️", layout="wide")
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 CACHE_TTS = os.path.join(APP_DIR, "cache_tts")
@@ -139,35 +152,19 @@ div[data-testid="stTextInput"] input:focus, div[data-testid="stTextArea"] textar
 div[data-testid="stProgress"] > div > div { box-shadow: 0 0 12px rgba(230,36,41,.8); }
 .spidey-dl-label { font-weight: 800; color: #FFB4B6; margin: 6px 0 10px; font-size: 1rem; }
 .spidey-foot { text-align: center; color: #5A6080; font-size: .8rem; padding: 20px 0 8px; }
-
-/* wizard nav fix */
-div[data-testid="stHorizontalBlock"]:has(> :nth-child(6):last-child) {
-    flex-wrap: nowrap !important;
-    gap: 0.25rem !important;
-}
-div[data-testid="stHorizontalBlock"]:has(> :nth-child(6):last-child) > div {
-    min-width: 0 !important;
-}
-div[data-testid="stHorizontalBlock"]:has(> :nth-child(6):last-child) button {
-    padding-left: 0.2rem !important;
-    padding-right: 0.2rem !important;
-}
-.wiz-bnav-col { display: none; }
-div[data-testid="stElementContainer"]:has(.wiz-bnav-col) { display: none; }
-div[data-testid="stHorizontalBlock"]:has(.wiz-bnav-col) {
-    flex-wrap: nowrap !important;
-    gap: 0.5rem !important;
-}
-div[data-testid="stHorizontalBlock"]:has(.wiz-bnav-col) > div {
-    min-width: 0 !important;
-}
 </style>"""
 
-st.markdown(_SPIDEY_CSS, unsafe_allow_html=True)
 
 _card_ctx_stack = []
 
+
 def _spidey_card_open(n, title):
+    import streamlit as st
+    # open/close ကို function နှစ်ခုနဲ့ ခွဲထားလို့ container ရဲ့
+    # __enter__/__exit__ ကို ကိုယ်တိုင် မောင်းတာ — `with st.container():` နဲ့ အတူတူပဲ။
+    # (ကြားထဲမှာ st.rerun/st.stop ဖြစ်ရင် run ပြတ်သွားမယ် — run အသစ်မှာ
+    #  Streamlit က context_dg_stack ကို အစက ပြန် reset လုပ်ပြီးသားမို့
+    #  ဒီမှာ ကျန်နေတဲ့ အဟောင်း ctx ကို လွှတ်ပစ်လိုက်ရုံပဲ)
     if _card_ctx_stack:
         _card_ctx_stack.clear()
     ctx = st.container(border=True)
@@ -179,229 +176,38 @@ def _spidey_card_open(n, title):
         unsafe_allow_html=True,
     )
 
+
 def _spidey_card_close():
-    if _card_ctx_stack:
-        ctx = _card_ctx_stack.pop()
-        ctx.__exit__(None, None, None)
+    ctx = _card_ctx_stack.pop()
+    ctx.__exit__(None, None, None)
 
-def _spidey_steps(current_step):
-    steps = ["Upload", "Transcribe", "Translate", "TTS", "Render", "Social"]
-    html = '<div class="spidey-steps">'
-    for i, name in enumerate(steps):
-        s_class = "spidey-step"
-        if i < current_step: s_class += " done"
-        elif i == current_step: s_class += " current"
-        else: s_class += " skip"
-        html += f'<div class="{s_class}"><span class="n">{i+1}</span>{name}</div>'
-    html += '</div>'
-    st.markdown(html, unsafe_allow_html=True)
 
-def run_cmd(cmd):
-    result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    if result.returncode != 0:
-        st.error(f"Command Error: {result.stderr.decode('utf-8')}")
-    return result.returncode == 0
-
-async def generate_edge_tts(text, output_path):
-    communicate = edge_tts.Communicate(text, "my-MM-ThihaNeural")
-    await communicate.save(output_path)
-
-def extract_audio(video_path, audio_path):
-    cmd = ["ffmpeg", "-y", "-i", video_path, "-vn", "-acodec", "libmp3lame", "-ac", "1", "-ar", "16000", "-q:a", "2", audio_path]
-    return run_cmd(cmd)
-
-def transcribe_audio_groq(audio_path, api_key):
-    client = Groq(api_key=api_key)
-    with open(audio_path, "rb") as file:
-        transcription = client.audio.transcriptions.create(
-          file=(audio_path, file.read()),
-          model="whisper-large-v3",
-          response_format="json",
-        )
-    return transcription.text
-
-def translate_script_gemini(text, api_key):
-    genai.configure(api_key=api_key)
-    model = genai.GenerativeModel("gemini-1.5-flash")
-    prompt = f"Translate the following text to natural, spoken Myanmar (Burmese) language:\n\n{text}"
-    response = model.generate_content(prompt)
-    return response.text
-
-def generate_social_media_pack(script, api_key):
-    genai.configure(api_key=api_key)
-    model = genai.GenerativeModel("gemini-1.5-flash")
-    prompt = f"""
-    You are an expert social media manager. Based on the following video script, create:
-    1. A highly engaging, viral 3-second hook and caption in Myanmar language (can mix a bit of English if natural).
-    2. Exactly 5 trending English hashtags relevant to the content.
-    
-    Format the output strictly as:
-    [Caption]
-    <Your caption here>
-    
-    [Hashtags]
-    <#hashtag1 #hashtag2 #hashtag3 #hashtag4 #hashtag5>
-    
-    Script:
-    {script}
-    """
-    response = model.generate_content(prompt)
-    return response.text
-
-if "step" not in st.session_state: st.session_state.step = 0
-if "video_path" not in st.session_state: st.session_state.video_path = None
-if "audio_path" not in st.session_state: st.session_state.audio_path = None
-if "transcription" not in st.session_state: st.session_state.transcription = ""
-if "translation" not in st.session_state: st.session_state.translation = ""
-if "dub_audio_path" not in st.session_state: st.session_state.dub_audio_path = None
-if "final_video_path" not in st.session_state: st.session_state.final_video_path = None
-if "social_pack" not in st.session_state: st.session_state.social_pack = None
-
-with st.sidebar:
-    st.markdown('<h2 style="color: #F03A3A; font-family: Bangers;">🕷️ API Keys</h2>', unsafe_allow_html=True)
-    groq_key = st.text_input("Groq API Key (Whisper)", type="password")
-    gemini_key = st.text_input("Gemini API Key (Translate & Caption)", type="password")
-    st.markdown("---")
-    if st.button("Reset Process"):
-        st.session_state.clear()
-        st.rerun()
-
-st.markdown('<div class="spidey-hero"><div class="spidey-kicker">SPIDER-VERSE TECH</div><div class="spidey-title">Audio Dub Studio</div><div class="spidey-sub">AI Myanmar Dubbing & Social Media Engine</div></div>', unsafe_allow_html=True)
-
-_spidey_steps(st.session_state.step)
-
-if st.session_state.step == 0:
-    _spidey_card_open(1, "Upload Video")
-    uploaded_file = st.file_uploader("Upload MP4 Video", type=["mp4"])
-    if uploaded_file is not None:
-        if st.button("Next: Process Video", type="primary"):
-            video_path = os.path.join(WORK_DIR, "input.mp4")
-            with open(video_path, "wb") as f:
-                f.write(uploaded_file.getbuffer())
-            st.session_state.video_path = video_path
-            st.session_state.step = 1
-            st.rerun()
-    _spidey_card_close()
-
-elif st.session_state.step == 1:
-    _spidey_card_open(2, "Extract & Transcribe")
-    if not groq_key:
-        st.warning("Please enter your Groq API Key in the sidebar.")
-    else:
-        if st.button("Start Transcription", type="primary"):
-            with st.spinner("Extracting audio..."):
-                audio_path = os.path.join(WORK_DIR, "audio.mp3")
-                if extract_audio(st.session_state.video_path, audio_path):
-                    st.session_state.audio_path = audio_path
-            
-            with st.spinner("Transcribing with Groq Whisper..."):
-                try:
-                    text = transcribe_audio_groq(st.session_state.audio_path, groq_key)
-                    st.session_state.transcription = text
-                    st.session_state.step = 2
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"Transcription failed: {e}")
-    if st.button("Back", key="b1"): st.session_state.step = 0; st.rerun()
-    _spidey_card_close()
-
-elif st.session_state.step == 2:
-    _spidey_card_open(3, "Translate Script")
-    st.text_area("Original Text", st.session_state.transcription, height=150, disabled=True)
-    if not gemini_key:
-        st.warning("Please enter your Gemini API Key in the sidebar.")
-    else:
-        if st.button("Translate to Myanmar", type="primary"):
-            with st.spinner("Translating via Gemini..."):
-                try:
-                    translated = translate_script_gemini(st.session_state.transcription, gemini_key)
-                    st.session_state.translation = translated
-                    st.session_state.step = 3
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"Translation failed: {e}")
-    if st.button("Back", key="b2"): st.session_state.step = 1; st.rerun()
-    _spidey_card_close()
-
-elif st.session_state.step == 3:
-    _spidey_card_open(4, "Edit & Generate Dub")
-    edited_text = st.text_area("Myanmar Script (Edit if needed)", st.session_state.translation, height=200)
-    
-    if st.button("Generate Myanmar Audio", type="primary"):
-        st.session_state.translation = edited_text
-        with st.spinner("Generating Voice with Edge-TTS..."):
-            dub_path = os.path.join(WORK_DIR, "dubbed.mp3")
-            asyncio.run(generate_edge_tts(edited_text, dub_path))
-            st.session_state.dub_audio_path = dub_path
-            st.session_state.step = 4
-            st.rerun()
-            
-    if st.button("Back", key="b3"): st.session_state.step = 2; st.rerun()
-    _spidey_card_close()
-
-elif st.session_state.step == 4:
-    _spidey_card_open(5, "Render Final Video")
-    st.audio(st.session_state.dub_audio_path)
-    
-    st.markdown("### ⚡ Video Speed Adjustment")
-    st.markdown("မြန်နှုန်းကို လိုသလိုချိန်ညှိနိုင်ပါတယ်။ (1.0 = ပုံမှန်, 2.0 = နှစ်ဆမြန်)")
-    speed_factor = st.slider("Playback Speed", min_value=1.0, max_value=2.0, value=1.0, step=0.1)
-    
-    if st.button("Mix Audio & Render", type="primary"):
-        with st.spinner(f"Rendering Video at {speed_factor}x speed..."):
-            final_vid = os.path.join(WORK_DIR, "final_output.mp4")
-            if speed_factor == 1.0:
-                cmd = ["ffmpeg", "-y", "-i", st.session_state.video_path, "-i", st.session_state.dub_audio_path, 
-                       "-c:v", "copy", "-c:a", "aac", "-map", "0:v:0", "-map", "1:a:0", final_vid]
-            else:
-                v_pts = 1.0 / speed_factor
-                a_tempo = speed_factor
-                cmd = ["ffmpeg", "-y", "-i", st.session_state.video_path, "-i", st.session_state.dub_audio_path,
-                       "-filter_complex", f"[0:v]setpts={v_pts}*PTS[v];[1:a]atempo={a_tempo}[a]", 
-                       "-map", "[v]", "-map", "[a]", "-c:v", "libx264", "-c:a", "aac", final_vid]
-            
-            if run_cmd(cmd):
-                st.session_state.final_video_path = final_vid
-                st.session_state.step = 5
-                st.rerun()
-                
-    if st.button("Back", key="b4"): st.session_state.step = 3; st.rerun()
-    _spidey_card_close()
-
-elif st.session_state.step == 5:
-    _spidey_card_open(6, "Done! Social Media Pack")
-    
-    col1, col2 = st.columns(2)
-    with col1:
-        st.video(st.session_state.final_video_path)
-        with open(st.session_state.final_video_path, "rb") as f:
-            st.download_button("⬇️ Download Final Video", f, file_name="dubbed_video.mp4", mime="video/mp4", type="primary")
-            
-    with col2:
-        st.markdown("### 🔥 Viral Caption & Hook")
-        
-        if st.session_state.social_pack is None:
-            if not gemini_key:
-                st.warning("Please provide Gemini API key in sidebar to generate caption.")
-            else:
-                with st.spinner("Writing 3-sec hook and finding hashtags..."):
-                    try:
-                        st.session_state.social_pack = generate_social_media_pack(st.session_state.translation, gemini_key)
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"Failed to generate caption: {e}")
-        else:
-            st.text_area("Generated Caption & Hashtags", st.session_state.social_pack, height=250)
-            
-            # Try Again Button for Social Caption
-            if st.button("🔄 Try Again (Regenerate)", type="secondary"):
-                st.session_state.social_pack = None
-                st.rerun()
-                
-    st.markdown("---")
-    if st.button("Start New Video", key="b5"):
-        st.session_state.clear()
-        st.rerun()
-    _spidey_card_close()
-
-st.markdown('<div class="spidey-foot">Developed with 🕷️ Spidey Theme | Powered by Streamlit, FFmpeg, Groq & Gemini</div>', unsafe_allow_html=True)
+def _spidey_steps(S, is_video, narr=False):
+    """Wizard nav — horizontal stepper (number + status icon), နှိပ်ပြီး ကူးလို့ရ."""
+    import streamlit as st
+    # ဖုန်း narrow screen မှာ Streamlit က columns တွေကို vertical ပြိုချပစ်တယ် —
+    # ၆ ကောလံ stepper ကို တစ်တန်းတည်း ဘေးတိုက်ထိန်းဖို့ CSS
+    st.markdown(
+        """<style>
+div[data-testid="stHorizontalBlock"]:has(> :nth-child(6):last-child) {
+    flex-wrap: nowrap !important;
+    gap: 0.25rem !important;
+}
+div[data-testid="stHorizontalBlock"]:has(> :nth-child(6):last-child) > div {
+    min-width: 0 !important;
+}
+div[data-testid="stHorizontalBlock"]:has(> :nth-child(6):last-child) button {
+    padding-left: 0.2rem !important;
+    padding-right: 0.2rem !important;
+}
+/* wizard bottom nav: ခလုတ် ၂ ခု ဘေးချင်းကပ် (marker က ပထမကော်လံထဲ) */
+.wiz-bnav-col { display: none; }
+/* marker ရဲ့ ကိုယ်ပိုင်အခွံ (stElementContainer) ကိုပဲ layout ကနေ ဖယ် —
+   element container တွေက nest မဖြစ်လို့ ဒီ rule က nav row ကို လုံးဝ မထိဘူး */
+div[data-testid="stElementContainer"]:has(.wiz-bnav-col) { display: none; }
+div[data-testid="stHorizontalBlock"]:has(.wiz-bnav-col) {
+    flex-wrap: nowrap !important;
+    gap: 0.5rem !important;
+}
+div[data-testid="stHorizontalBlock"]:has(.wiz-bnav-col) > div {
+    min-width: 0 !important;
